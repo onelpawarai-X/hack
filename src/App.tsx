@@ -5,6 +5,10 @@ import { AttackerInspector } from './components/AttackerInspector';
 import { AuthGate } from './components/AuthGate';
 import { ControlCenter } from './components/ControlCenter';
 import { DefenseGrid } from './components/DefenseGrid';
+import { GlobalCameraSection } from './components/GlobalCameraSection';
+import { GlobalExposureSection } from './components/GlobalExposureSection';
+import { SentinelAgentBadge } from './components/SentinelAgentBadge';
+import { WebsiteNetworkSection } from './components/WebsiteNetworkSection';
 import { DomainVerificationPanel } from './components/DomainVerificationPanel';
 import { EthicalBanner } from './components/EthicalBanner';
 import { ImageForensicsPanel } from './components/ImageForensicsPanel';
@@ -79,6 +83,7 @@ function AppDashboard() {
   const [activatingShield, setActivatingShield] = useState(false);
   const [shieldNotice, setShieldNotice] = useState<string | null>(null);
   const [activeMatrixTab, setActiveMatrixTab] = useState<MatrixTab>('attackers');
+  const [activeShieldId, setActiveShieldId] = useState<string>('');
 
   const radarSectionRef = useRef<HTMLDivElement | null>(null);
   const scannerSectionRef = useRef<HTMLDivElement | null>(null);
@@ -138,6 +143,12 @@ function AppDashboard() {
     void fetchRadar(false);
     void fetchDefenseState();
   }, [fetchRadar, fetchDefenseState]);
+
+  useEffect(() => {
+    if (!activeShieldId && defenseState.protectedShields.length > 0) {
+      setActiveShieldId(defenseState.protectedShields[0].id);
+    }
+  }, [activeShieldId, defenseState.protectedShields]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -322,7 +333,7 @@ function AppDashboard() {
         fetch('/api/defense/block-ip', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip, reason }),
+          body: JSON.stringify({ ip, reason, assetId: activeShieldId || undefined }),
         }),
         handleScanTarget(ip, false),
       ]);
@@ -344,7 +355,12 @@ function AppDashboard() {
               }
             : prev,
         );
-        setShieldNotice(`${ip} — ${t.defendedBlockedBadge}`);
+        const site = payload.entry.shieldHost;
+        setShieldNotice(
+          site
+            ? `${ip} — ${site} ${lang === 'bn' ? 'সাইটে ব্লক রুল তৈরি হয়েছে' : 'block rule generated for site'}`
+            : `${ip} — ${t.defendedBlockedBadge}`,
+        );
       }
     } finally {
       setActivatingShield(false);
@@ -381,12 +397,45 @@ function AppDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target }),
       });
-      if (res.ok) {
-        const data = (await res.json()) as { state: DefenseStateSnapshot };
-        setDefenseState(data.state);
+      const payload = (await res.json().catch(() => null)) as
+        | {
+            state?: DefenseStateSnapshot;
+            error?: string;
+            verification?: { txtRecordHost: string; txtRecordValue: string; httpFilePath: string };
+          }
+        | null;
+      if (res.ok && payload?.state) {
+        setDefenseState(payload.state);
         setShieldNotice(t.scanner.shieldActivatedMsg);
         setActiveMatrixTab('defenseCenter');
+      } else {
+        const verification = payload?.verification;
+        setShieldNotice(
+          verification
+            ? `${payload?.error ?? 'Ownership verification required.'} TXT: ${verification.txtRecordHost} = ${verification.txtRecordValue} · File: ${verification.httpFilePath}`
+            : payload?.error ?? 'Shield activation failed.',
+        );
       }
+    } finally {
+      setActivatingShield(false);
+    }
+  };
+
+  const handleDeployShield = async (id: string) => {
+    setActivatingShield(true);
+    setShieldNotice(null);
+    try {
+      const res = await fetch(`/api/defense/shield/${encodeURIComponent(id)}/deploy`, {
+        method: 'POST',
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | { detail?: string; error?: string; directory?: string }
+        | null;
+      setShieldNotice(
+        res.ok
+          ? `${lang === 'bn' ? 'রুল ফাইল তৈরি হয়েছে' : 'Rule files deployed'}: ${payload?.directory ?? ''}`
+          : payload?.error ?? (lang === 'bn' ? 'ডিপ্লয় ব্যর্থ' : 'Deploy failed'),
+      );
     } finally {
       setActivatingShield(false);
     }
@@ -662,6 +711,24 @@ function AppDashboard() {
           onRemoveSite={(id) => void handleGridRemoveSite(id)}
         />
 
+        <GlobalExposureSection lang={lang} />
+
+        <WebsiteNetworkSection
+          lang={lang}
+          onProtect={(site) => void handleActivateWebsiteShield(site)}
+          protecting={activatingShield}
+          notice={shieldNotice}
+        />
+
+        <GlobalCameraSection
+          lang={lang}
+          focus={
+            selectedNode
+              ? { lat: selectedNode.lat, lon: selectedNode.lon, label: `${selectedNode.ip} · ${selectedNode.city}` }
+              : null
+          }
+        />
+
         <SecurityStackPanel lang={lang} />
 
         <AttackerDossierPanel
@@ -737,6 +804,30 @@ function AppDashboard() {
 
         {/* 4 Command Sections: Active Attackers | Phishing Takedowns | Global Threats | Defense & System Shields */}
         <div ref={matrixSectionRef}>
+          {defenseState.protectedShields.length > 0 && (
+            <div className="soc-panel mb-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                {lang === 'bn' ? 'সুরক্ষিত সাইটের জন্য ব্লক' : 'Block for protected site'}
+              </span>
+              <select
+                value={activeShieldId}
+                onChange={(event) => setActiveShieldId(event.target.value)}
+                className="rounded-lg border border-slate-700 bg-[#04060A] px-2 py-1 text-[11px] text-slate-100"
+              >
+                {defenseState.protectedShields.map((shield) => (
+                  <option key={shield.id} value={shield.id}>
+                    {shield.host}
+                  </option>
+                ))}
+                <option value="">{lang === 'bn' ? 'শুধু এই কন্ট্রোল প্লেন' : 'Control plane only'}</option>
+              </select>
+              <span className="text-[10px] text-slate-500">
+                {lang === 'bn'
+                  ? 'এই সাইটের ফায়ারওয়াল/WAF-এ রুল তৈরি হবে; আমাদের সার্ভারে নয়।'
+                  : 'Rules target this site’s firewall/WAF, not our server.'}
+              </span>
+            </div>
+          )}
           <ThreatFeedsMatrix
             t={t}
             lang={lang}
@@ -758,8 +849,11 @@ function AppDashboard() {
             onRemoveSinkhole={(dom) => void handleRemoveSinkhole(dom)}
             onRecheckShield={(id) => void handleRecheckShield(id)}
             onRemoveShield={(id) => void handleRemoveShield(id)}
+            onDeployShield={(id) => void handleDeployShield(id)}
           />
         </div>
+
+        <SentinelAgentBadge lang={lang} />
 
         <ControlCenter
           open={controlOpen}

@@ -14,7 +14,7 @@ export interface OsmSurveillanceCamera {
   description?: string;
   osmUrl: string;
   streamUrl?: string;
-  protocol?: 'hls' | 'mjpeg' | 'iframe' | 'link';
+  protocol?: 'hls' | 'mjpeg' | 'iframe' | 'link' | 'image';
   source: 'OpenStreetMap';
   attribution: string;
 }
@@ -84,7 +84,7 @@ function normalizeStreamUrl(url?: string): string | undefined {
   return youtube ? `https://www.youtube.com/embed/${youtube[1]}` : url;
 }
 
-function streamProtocol(url: string): 'hls' | 'mjpeg' | 'iframe' | 'link' {
+function streamProtocol(url: string): 'hls' | 'mjpeg' | 'iframe' | 'link' | 'image' {
   if (/\.m3u8($|\?)/i.test(url)) return 'hls';
   if (/mjpe?g|\.mjpg($|\?)|action=stream/i.test(url)) return 'mjpeg';
   if (/embed|iframe|youtube\.com\/embed|player\./i.test(url)) return 'iframe';
@@ -185,6 +185,105 @@ export function parseOsmMapXml(
     .filter((camera) => camera.distanceKm <= radiusKm)
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, MAX_RESULTS);
+}
+
+export function parseOsmMapXmlBbox(
+  xml: string,
+  centerLat: number,
+  centerLon: number,
+  limit = 500,
+): OsmSurveillanceCamera[] {
+  const parsed = parser.parse(xml) as { osm?: Record<string, unknown> };
+  const osm = parsed.osm ?? {};
+  const nodes = asArray(osm.node as Record<string, unknown> | Record<string, unknown>[]);
+  const ways = asArray(osm.way as Record<string, unknown> | Record<string, unknown>[]);
+  const nodeIndex = new Map<string, { lat: number; lon: number; tags: Record<string, string> }>();
+  for (const node of nodes) {
+    const id = String(node['@_id'] ?? '');
+    const nodeLat = Number(node['@_lat']);
+    const nodeLon = Number(node['@_lon']);
+    if (id && Number.isFinite(nodeLat) && Number.isFinite(nodeLon)) {
+      nodeIndex.set(id, { lat: nodeLat, lon: nodeLon, tags: tagsOf(node) });
+    }
+  }
+  const cameras: OsmSurveillanceCamera[] = [];
+  for (const [id, node] of nodeIndex) {
+    const camera = buildCamera(`node/${id}`, node.lat, node.lon, node.tags, centerLat, centerLon);
+    if (camera) cameras.push(camera);
+  }
+  for (const way of ways) {
+    const tags = tagsOf(way);
+    if (!isSurveillance(tags) || !isPublicSurveillance(tags)) continue;
+    const refs = asArray(way.nd as Record<string, unknown> | Record<string, unknown>[])
+      .map((nd) => nodeIndex.get(String(nd['@_ref'] ?? '')))
+      .filter((node): node is { lat: number; lon: number; tags: Record<string, string> } => Boolean(node));
+    if (refs.length === 0) continue;
+    const center = {
+      lat: refs.reduce((sum, node) => sum + node.lat, 0) / refs.length,
+      lon: refs.reduce((sum, node) => sum + node.lon, 0) / refs.length,
+    };
+    const camera = buildCamera(`way/${String(way['@_id'] ?? '')}`, center.lat, center.lon, tags, centerLat, centerLon);
+    if (camera) cameras.push(camera);
+  }
+  return cameras.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, limit);
+}
+
+export async function findOsmSurveillanceBbox(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+): Promise<OsmSurveillanceResult> {
+  const bbox = { south, west, north, east };
+  if (![south, west, north, east].every(Number.isFinite)) {
+    return { ok: false, source: 'OpenStreetMap', bbox, fetchedAt: new Date().toISOString(), cameras: [], error: 'Invalid bounding box.' };
+  }
+  const area = Math.abs((north - south) * (east - west));
+  if (area > 0.08) {
+    return {
+      ok: false,
+      source: 'OpenStreetMap',
+      bbox,
+      fetchedAt: new Date().toISOString(),
+      cameras: [],
+      error: 'Zoom in: the viewport is too large for a live OpenStreetMap camera query.',
+    };
+  }
+  const cacheKey = `bbox:${south.toFixed(3)},${west.toFixed(3)},${north.toFixed(3)},${east.toFixed(3)}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  try {
+    const url = `${OSM_MAP_URL}?bbox=${west},${south},${east},${north}`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'SentinelGlobe/1.0 (public surveillance research; contact: security@localhost)',
+        Accept: 'application/xml,text/xml',
+      },
+      signal: AbortSignal.timeout(25_000),
+    });
+    const base = { source: 'OpenStreetMap' as const, bbox, fetchedAt: new Date().toISOString() };
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      return { ...base, ok: false, cameras: [], error: `OpenStreetMap returned HTTP ${response.status}${body ? `: ${body.slice(0, 160)}` : '.'}` };
+    }
+    const xml = await response.text();
+    const result: OsmSurveillanceResult = {
+      ...base,
+      ok: true,
+      cameras: parseOsmMapXmlBbox(xml, (south + north) / 2, (west + east) / 2),
+    };
+    cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, value: result });
+    return result;
+  } catch (err) {
+    return {
+      ok: false,
+      source: 'OpenStreetMap',
+      bbox,
+      fetchedAt: new Date().toISOString(),
+      cameras: [],
+      error: err instanceof Error ? err.message : 'OpenStreetMap query failed',
+    };
+  }
 }
 
 export async function findOsmSurveillance(

@@ -48,7 +48,7 @@ export interface PhishingTrap {
   id: string;
   url: string;
   host: string;
-  sourceFeed: 'OpenPhish';
+  sourceFeed: 'OpenPhish' | 'URLhaus';
   severity: 'CRITICAL' | 'HIGH';
   riskReasons: string[];
   detectedAt: string;
@@ -249,7 +249,7 @@ export interface ActiveVulnFinding {
 export interface DomainVerificationStatus {
   domain: string;
   verified: boolean;
-  method?: 'dns-txt' | 'http-file';
+  method?: 'dns-txt' | 'http-file' | 'agent-beacon';
   verifiedAt?: string;
   token: string;
   txtRecordHost: string;
@@ -452,6 +452,9 @@ export interface ImageForensicsResult {
 
 export interface BlockedIpEntry {
   ip: string;
+  scope?: 'local' | 'protected-site';
+  shieldId?: string;
+  shieldHost?: string;
   blockedAt: string;
   lastCheckedAt: string;
   reason: string;
@@ -466,6 +469,11 @@ export interface BlockedIpEntry {
   openPorts: number[];
   knownVulns: string[];
   watchdogStatus: 'blocked-monitoring';
+  firewallEnforcement?: {
+    applied: boolean;
+    detail: string;
+    appliedAt?: string;
+  };
   firewallRules: {
     nginx: string;
     iptables: string;
@@ -512,5 +520,82 @@ export interface DefenseStateSnapshot {
     iptablesScript: string;
     dnsSinkholeHosts: string;
     cloudflareWafExpr: string;
+  };
+  shieldFirewallBundles?: Record<
+    string,
+    {
+      nginxDenyList: string;
+      iptablesScript: string;
+      dnsSinkholeHosts: string;
+      cloudflareWafExpr: string;
+    }
+  >;
+}
+
+export interface ThreatActorExternalIntel {
+  generatedAt: string;
+  sources: Array<{ name: string; status: 'online' | 'degraded'; detail: string }>;
+  shodan?: {
+    ports: number[];
+    hostnames: string[];
+    tags: string[];
+    vulns: string[];
+    cpes: string[];
+  };
+  otx: {
+    pulseCount: number;
+    pulses: Array<{
+      name: string;
+      description?: string;
+      tags: string[];
+      malwareFamilies: string[];
+      attackIds: string[];
+      adversary?: string;
+      targetedCountries: string[];
+      created?: string;
+      modified?: string;
+      references: string[];
+    }>;
+    validation: string[];
+    passiveDns: Array<{
+      hostname: string;
+      address?: string;
+      first?: string;
+      last?: string;
+      recordType?: string;
+    }>;
+    malware: Array<{ hash: string; detections?: number; family?: string; date?: string }>;
+    urls: Array<{ url: string; domain?: string; hostname?: string; date?: string; httpCode?: number }>;
+    tags: string[];
+    malwareFamilies: string[];
+  };
+}
+
+export interface AgentSite {
+  site: string;
+  url: string;
+  firstSeen: string;
+  lastSeen: string;
+  beacons: number;
+  threats: number;
+  lastType: string;
+  lastSeverity: string;
+  userAgent?: string;
+  verified: boolean;
+  shield: {
+    id: string;
+    status: string;
+    verdict: string;
+    activatedAt: string;
+  } | null;
+}
+
+export interface AgentSiteSnapshot {
+  sites: AgentSite[];
+  summary: {
+    total: number;
+    online: number;
+    protected: number;
+    threats: number;
   };
 }

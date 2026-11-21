@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { AttackEvent } from '../src/types/defenseGrid.ts';
-import type { ThreatNode } from '../src/types/cyber.ts';
+import type { ThreatActorExternalIntel, ThreatNode } from '../src/types/cyber.ts';
 import { listAttackEvents } from './db.ts';
 import { traceAttackerIp } from './ipAttribution.ts';
 import { localIoc } from './localIoc.ts';
+import { collectExternalIntel } from './externalIntel.ts';
 import { lookupAsn, lookupGeo, lookupPtr, lookupWhoisIp } from './nativeIntel.ts';
 import { isValidIpv4 } from './threatRules.ts';
 
@@ -43,6 +44,7 @@ export interface AttackerDossier {
     timezone?: string;
   };
   reverseDns?: string;
+  externalIntel: ThreatActorExternalIntel;
   localIoc: Array<{ value: string; tags: string[]; source: string }>;
   observedAttacks: {
     count: number;
@@ -86,7 +88,12 @@ function countBy<T extends string>(values: T[]): Record<string, number> {
   }, {});
 }
 
-function riskScore(node: ThreatNode, events: AttackEvent[], tags: string[]): { score: number; factors: string[] } {
+function riskScore(
+  node: ThreatNode,
+  events: AttackEvent[],
+  tags: string[],
+  external?: ThreatActorExternalIntel,
+): { score: number; factors: string[] } {
   const factors: string[] = [];
   let score = 10;
   if (node.severity === 'CRITICAL') {
@@ -118,6 +125,25 @@ function riskScore(node: ThreatNode, events: AttackEvent[], tags: string[]): { s
   }
   if (node.abuseEmails?.length) {
     factors.push('Published WHOIS abuse contact available');
+  }
+  const shodanVulns = external?.shodan?.vulns.length ?? 0;
+  if (shodanVulns > 0) {
+    score += Math.min(20, 5 + shodanVulns * 2);
+    factors.push(`${shodanVulns} exposed CVE(s) on public Shodan InternetDB`);
+  }
+  const pulseCount = external?.otx.pulseCount ?? 0;
+  if (pulseCount > 0) {
+    score += Math.min(25, 8 + pulseCount);
+    factors.push(`${pulseCount} AlienVault OTX threat pulse(s)`);
+  }
+  const families = external?.otx.malwareFamilies ?? [];
+  if (families.length > 0) {
+    score += 10;
+    factors.push(`Malware family correlation: ${families.slice(0, 4).join(', ')}`);
+  }
+  if ((external?.otx.passiveDns.length ?? 0) > 5) {
+    score += 5;
+    factors.push('Large passive-DNS history');
   }
   return { score: Math.min(100, score), factors };
 }
@@ -232,19 +258,34 @@ function renderHtml(input: Omit<AttackerDossier, 'reportText' | 'reportHtml'>): 
 
 export async function buildAttackerDossier(ip: string): Promise<AttackerDossier> {
   if (!isValidIpv4(ip)) throw new Error('Valid IPv4 address required.');
-  const [attribution, geo, asn, reverseDns, whois, events] = await Promise.all([
+  const [attribution, geo, asn, reverseDns, whois, events, externalIntel] = await Promise.all([
     traceAttackerIp(ip, { includeWhois: true }),
     lookupGeo(ip),
     lookupAsn(ip),
     lookupPtr(ip),
     lookupWhoisIp(ip).catch(() => null),
     Promise.resolve(listAttackEvents({ ip, limit: 200 })),
+    collectExternalIntel(ip).catch(() => ({
+      generatedAt: new Date().toISOString(),
+      sources: [],
+      shodan: undefined,
+      otx: {
+        pulseCount: 0,
+        pulses: [],
+        validation: [],
+        passiveDns: [],
+        malware: [],
+        urls: [],
+        tags: [],
+        malwareFamilies: [],
+      },
+    })),
   ]);
   if (!attribution) throw new Error('No native attribution data is available for this IP.');
 
   const tags = localIoc.lookupIp(ip);
   const localTags = Array.from(new Set(tags.flatMap((entry) => entry.tags)));
-  const risk = riskScore(attribution, events, localTags);
+  const risk = riskScore(attribution, events, localTags, externalIntel);
   const evidence: DossierEvidence[] = [
     {
       id: 'geo-offline',
@@ -269,6 +310,22 @@ export async function buildAttackerDossier(ip: string): Promise<AttackerDossier>
       source: `Native WHOIS (${whois?.server ?? 'RIR'})`,
       confidence: 'High',
       detail: 'Abuse contact published by the responsible RIR.',
+    },
+    {
+      id: 'shodan-internetdb',
+      type: 'public-exposure',
+      value: `${externalIntel.shodan?.ports.length ?? 0} port(s), ${externalIntel.shodan?.vulns.length ?? 0} CVE(s)`,
+      source: 'Shodan InternetDB (public, no key)',
+      confidence: 'Medium',
+      detail: 'Publicly indexed services and vulnerabilities; not an intrusive scan.',
+    },
+    {
+      id: 'otx-pulses',
+      type: 'threat-intelligence',
+      value: `${externalIntel.otx.pulseCount} pulse(s), ${externalIntel.otx.malwareFamilies.length} malware family tag(s)`,
+      source: 'AlienVault OTX public API',
+      confidence: 'Medium',
+      detail: 'Community threat pulses, passive DNS and historical URL observations.',
     },
     {
       id: 'sensor-events',
@@ -307,6 +364,7 @@ export async function buildAttackerDossier(ip: string): Promise<AttackerDossier>
       timezone: geo?.timezone ?? attribution.timezone,
     },
     reverseDns,
+    externalIntel,
     localIoc: tags.map((entry) => ({ value: entry.value, tags: entry.tags, source: entry.source })),
     observedAttacks: {
       count: events.length,
@@ -341,6 +399,8 @@ export async function buildAttackerDossier(ip: string): Promise<AttackerDossier>
       'Native RIR WHOIS over TCP/43',
       'SentinelGlobe local attack sensor',
       'SentinelGlobe local IOC store',
+      'Shodan InternetDB public exposure index',
+      'AlienVault OTX public threat intelligence',
     ],
     limitations: [
       'IP geolocation is approximate and cannot identify a natural person.',

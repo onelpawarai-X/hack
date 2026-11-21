@@ -182,14 +182,15 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<SecurityToolId | null>(null);
   const [panel, setPanel] = useState<{ title: string; body: string } | null>(null);
+  const [stackAction, setStackAction] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [stackRes, catalogRes] = await Promise.all([
-        fetch('/api/security-stack'),
-        fetch('/api/security-stack/tools'),
+        fetch('/api/security-stack', { cache: 'no-store' }),
+        fetch('/api/security-stack/tools', { cache: 'no-store' }),
       ]);
       if (!stackRes.ok) throw new Error(`HTTP ${stackRes.status}`);
       setSnapshot((await stackRes.json()) as SecurityStackSnapshot);
@@ -248,6 +249,21 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
     }
     return groups;
   }, [catalog, snapshot]);
+
+  const runStackAction = async (kind: 'install-docker' | 'start-all') => {
+    setStackAction(kind);
+    setError(null);
+    try {
+      const res = await fetch(`/api/security-stack/${kind}`, { method: 'POST' });
+      const payload = (await res.json()) as { detail?: string; error?: string };
+      if (!res.ok) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setStackAction(null);
+    }
+  };
 
   const action = async (id: SecurityToolId, kind: 'start' | 'stop' | 'restart') => {
     setBusy(`${id}:${kind}`);
@@ -328,6 +344,24 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
           </span>
           <button
             type="button"
+            onClick={() => void runStackAction('install-docker')}
+            disabled={stackAction !== null}
+            className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-50"
+          >
+            {stackAction === 'install-docker' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Server className="h-3 w-3" />}
+            {L(lang, 'Docker সেটআপ', 'Setup Docker')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void runStackAction('start-all')}
+            disabled={stackAction !== null}
+            className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
+          >
+            {stackAction === 'start-all' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+            {L(lang, 'সব চালু', 'Start all')}
+          </button>
+          <button
+            type="button"
             onClick={() => void refresh()}
             disabled={loading}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-semibold text-slate-300 hover:border-slate-500 disabled:opacity-50"
@@ -341,6 +375,26 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
       {error && (
         <div className="rounded-lg border border-red-500/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">
           {error}
+        </div>
+      )}
+
+      {snapshot && !snapshot.docker.available && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
+          <div className="font-semibold">
+            {L(lang, 'Docker চালু নেই — কন্টেইনার টুলগুলো এখনো চলেনি', 'Docker is not running — container tools are not running')}
+          </div>
+          <div className="mt-0.5 text-amber-200/80">{snapshot.docker.detail}</div>
+          <div className="mt-1 font-mono text-[10px] text-amber-200/70">sudo dockerd &amp;&amp; sudo docker ps</div>
+        </div>
+      )}
+
+      {snapshot?.docker.available && (summary?.running ?? 0) === 0 && (
+        <div className="rounded-lg border border-cyan-500/30 bg-cyan-950/20 px-3 py-2 text-[11px] leading-relaxed text-cyan-100">
+          {L(
+            lang,
+            'Docker প্রস্তুত, কিন্তু কোনো কন্টেইনার এখনো চালু নেই। নিচের Start বাটন চাপুন।',
+            'Docker is ready, but no containers are running. Press Start below.',
+          )}
         </div>
       )}
 

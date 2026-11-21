@@ -314,7 +314,22 @@ export async function getSecurityToolLogs(id: SecurityToolId, tail = 80): Promis
     ['logs', '--tail', String(Math.min(Math.max(tail, 1), 500)), toolServiceName(id)],
     15_000,
   );
-  if (!result.ok) return [`log unavailable: ${result.err ?? 'docker error'}`];
+  if (!result.ok) {
+    const err = result.err ?? '';
+    if (/ENOENT|not installed/i.test(err)) {
+      return ['Docker CLI is not installed on this host. Install Docker Engine, then start the tool again.'];
+    }
+    if (/permission denied/i.test(err)) {
+      return ['Docker socket permission denied. Add this user to the docker group or allow passwordless sudo docker.'];
+    }
+    if (/Cannot connect|docker\.sock|daemon/i.test(err)) {
+      return ['Docker daemon is not running. Start it with: sudo dockerd'];
+    }
+    if (/No such (object|container)|not found/i.test(err)) {
+      return [`${tool.name} container is not running. Press Start first.`];
+    }
+    return [`log unavailable: ${err || 'docker error'}`];
+  }
   const combined = `${result.out}\n${result.err ?? ''}`.trim();
   return combined ? combined.split(/\r?\n/).slice(-tail) : ['No log lines yet.'];
 }

@@ -1,7 +1,7 @@
 import Hls from 'hls.js';
 import { Download, FileText, Globe2, Mail, MapPin, ShieldAlert, ShieldBan, Video } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { Language } from '../types/cyber';
+import type { Language, ThreatActorExternalIntel } from '../types/cyber';
 
 interface DossierEvent {
   ts: string;
@@ -32,6 +32,7 @@ interface Dossier {
     severities: Record<string, number>;
     events: DossierEvent[];
   };
+  externalIntel: ThreatActorExternalIntel;
   evidence: Array<{ id: string; type: string; value: string; source: string; confidence: string; detail: string }>;
   forensic: { sha256: string; sources: string[]; limitations: string[]; chainOfCustody: string };
   reportText: string;
@@ -156,6 +157,8 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
   const [osmStatus, setOsmStatus] = useState<string | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<PublicCamera | null>(null);
   const [cameraStatus, setCameraStatus] = useState<string | null>(null);
+  const [shields, setShields] = useState<Array<{ id: string; host: string }>>([]);
+  const [targetShieldId, setTargetShieldId] = useState('');
   const [cameraForm, setCameraForm] = useState({
     name: '',
     url: '',
@@ -167,6 +170,19 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
   useEffect(() => {
     if (initialIp && !ip) setIp(initialIp);
   }, [initialIp, ip]);
+
+  useEffect(() => {
+    fetch('/api/defense/state', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.protectedShields) return;
+        setShields(data.protectedShields);
+        if (!targetShieldId && data.protectedShields[0]?.id) {
+          setTargetShieldId(data.protectedShields[0].id);
+        }
+      })
+      .catch(() => undefined);
+  }, [targetShieldId]);
 
   const load = async (target = ip) => {
     const clean = target.trim();
@@ -223,11 +239,19 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
       const res = await fetch('/api/defense/block-ip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: dossier.ip, reason: `Forensic dossier risk ${dossier.risk.score}/100` }),
+        body: JSON.stringify({
+          ip: dossier.ip,
+          reason: `Forensic dossier risk ${dossier.risk.score}/100`,
+          assetId: targetShieldId || undefined,
+        }),
       });
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-      setBlockStatus(L(lang, 'লোকাল ফায়ারওয়াল ও ডিফেন্স ইঞ্জিনে ব্লক হয়েছে।', 'Blocked in the local firewall and defense engine.'));
+      setBlockStatus(
+        targetShieldId
+          ? L(lang, 'সুরক্ষিত সাইটের জন্য ব্লক রুল তৈরি হয়েছে।', 'Block rule generated for the protected site.')
+          : L(lang, 'কন্ট্রোল প্লেনে ব্লক হয়েছে।', 'Blocked in the control plane.'),
+      );
       onBlocked?.();
     } catch (err) {
       setBlockStatus(err instanceof Error ? err.message : 'Block failed');
@@ -394,6 +418,20 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
                   placeholder={L(lang, 'কোম্পানির সিকিউরিটি ইমেইল (কমা দিয়ে একাধিক)', 'Company security email(s), comma separated')}
                   className="w-full rounded-lg border border-slate-700 bg-[#02060c] px-2 py-1.5 text-[10px] text-slate-100 outline-none focus:border-cyan-500/60"
                 />
+                {shields.length > 0 && (
+                  <select
+                    value={targetShieldId}
+                    onChange={(event) => setTargetShieldId(event.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-[#02060c] px-2 py-1.5 text-[10px] text-slate-100"
+                  >
+                    {shields.map((shield) => (
+                      <option key={shield.id} value={shield.id}>
+                        {L(lang, 'ব্লক করুন:', 'Block at:')} {shield.host}
+                      </option>
+                    ))}
+                    <option value="">{L(lang, 'শুধু কন্ট্রোল প্লেন', 'Control plane only')}</option>
+                  </select>
+                )}
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
@@ -415,6 +453,116 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
               </div>
             </div>
           </div>
+
+          {dossier.externalIntel && (
+            <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-3 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="flex items-center gap-1.5 text-[11px] font-bold text-cyan-200">
+                  <Globe2 className="h-3.5 w-3.5" /> {L(lang, 'গ্লোবাল OSINT অডিট', 'Global OSINT audit')}
+                </h3>
+                <div className="flex flex-wrap gap-1">
+                  {dossier.externalIntel.sources.map((source) => (
+                    <span
+                      key={source.name}
+                      title={source.detail}
+                      className={`rounded-full border px-1.5 py-0.5 text-[8px] ${
+                        source.status === 'online'
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                          : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                      }`}
+                    >
+                      {source.name}: {source.detail}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                <div className="rounded-lg border border-slate-800 bg-[#02060c] p-2">
+                  <div className="text-[9px] uppercase text-slate-500">Shodan InternetDB</div>
+                  {dossier.externalIntel.shodan ? (
+                    <div className="mt-1 space-y-1 text-[10px] text-slate-300">
+                      <div><span className="text-slate-500">ports:</span> {dossier.externalIntel.shodan.ports.join(', ') || 'none'}</div>
+                      <div><span className="text-slate-500">hostnames:</span> {dossier.externalIntel.shodan.hostnames.join(', ') || 'none'}</div>
+                      <div><span className="text-slate-500">tags:</span> {dossier.externalIntel.shodan.tags.join(', ') || 'none'}</div>
+                      <div className={dossier.externalIntel.shodan.vulns.length ? 'text-red-300' : ''}>
+                        <span className="text-slate-500">CVEs:</span> {dossier.externalIntel.shodan.vulns.join(', ') || 'none'}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[10px] text-slate-500">{L(lang, 'এই IP-এর জন্য Shodan রেকর্ড নেই।', 'No Shodan record for this IP.')}</p>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-800 bg-[#02060c] p-2">
+                  <div className="text-[9px] uppercase text-slate-500">AlienVault OTX</div>
+                  <div className="mt-1 text-[10px] text-slate-300">
+                    <div><span className="text-slate-500">pulses:</span> {dossier.externalIntel.otx.pulseCount}</div>
+                    <div><span className="text-slate-500">malware families:</span> {dossier.externalIntel.otx.malwareFamilies.join(', ') || 'none'}</div>
+                    <div><span className="text-slate-500">tags:</span> {dossier.externalIntel.otx.tags.join(', ') || 'none'}</div>
+                  </div>
+                </div>
+              </div>
+
+              {dossier.externalIntel.otx.pulses.length > 0 && (
+                <div className="rounded-lg border border-slate-800 bg-[#02060c] p-2">
+                  <div className="mb-1 text-[9px] uppercase text-slate-500">OTX pulses / campaigns</div>
+                  <div className="max-h-48 space-y-1 overflow-y-auto">
+                    {dossier.externalIntel.otx.pulses.map((pulse, index) => (
+                      <div key={`${pulse.name}-${index}`} className="rounded border border-slate-800/70 p-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-slate-200">{pulse.name}</span>
+                          {pulse.adversary && <span className="rounded bg-red-500/10 px-1 text-[8px] text-red-300">{pulse.adversary}</span>}
+                          {pulse.modified && <span className="ml-auto font-mono text-[8px] text-slate-500">{new Date(pulse.modified).toLocaleDateString()}</span>}
+                        </div>
+                        {pulse.description && <p className="mt-0.5 line-clamp-2 text-[9px] text-slate-400">{pulse.description}</p>}
+                        <div className="mt-0.5 flex flex-wrap gap-1">
+                          {[...pulse.tags, ...pulse.malwareFamilies].slice(0, 8).map((tag) => (
+                            <span key={tag} className="rounded bg-slate-800 px-1 text-[8px] text-slate-300">{tag}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {dossier.externalIntel.otx.passiveDns.length > 0 && (
+                <div className="rounded-lg border border-slate-800 bg-[#02060c] p-2">
+                  <div className="mb-1 text-[9px] uppercase text-slate-500">Passive DNS history</div>
+                  <div className="max-h-40 overflow-y-auto">
+                    <table className="w-full text-left text-[9px]">
+                      <thead className="text-slate-500"><tr><th className="p-1">Hostname</th><th className="p-1">First</th><th className="p-1">Last</th><th className="p-1">Type</th></tr></thead>
+                      <tbody className="text-slate-300">
+                        {dossier.externalIntel.otx.passiveDns.slice(0, 25).map((record, index) => (
+                          <tr key={`${record.hostname}-${index}`} className="border-t border-slate-800/60">
+                            <td className="p-1 font-mono break-all">{record.hostname}</td>
+                            <td className="p-1 text-slate-500">{record.first ? new Date(record.first).toLocaleDateString() : '—'}</td>
+                            <td className="p-1 text-slate-500">{record.last ? new Date(record.last).toLocaleDateString() : '—'}</td>
+                            <td className="p-1">{record.recordType ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {dossier.externalIntel.otx.urls.length > 0 && (
+                <div className="rounded-lg border border-slate-800 bg-[#02060c] p-2">
+                  <div className="mb-1 text-[9px] uppercase text-slate-500">Historical URLs</div>
+                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                    {dossier.externalIntel.otx.urls.slice(0, 15).map((url, index) => (
+                      <div key={`${url.url}-${index}`} className="flex gap-2 text-[9px]">
+                        <span className="shrink-0 font-mono text-slate-500">{url.date ? new Date(url.date).toLocaleDateString() : '—'}</span>
+                        <a href={url.url} target="_blank" rel="noreferrer" className="truncate text-cyan-300 underline decoration-dotted">{url.url}</a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {dossier.observedAttacks.events.length > 0 && (
             <div className="overflow-x-auto rounded-lg border border-slate-800">

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -15,7 +16,8 @@ import {
 } from './server/abuseMailer.ts';
 import { buildAttackerDossier } from './server/attackerDossier.ts';
 import { cameraRegistry } from './server/cameraRegistry.ts';
-import { findOsmSurveillance } from './server/publicCameras.ts';
+import { findOsmSurveillance, findOsmSurveillanceBbox } from './server/publicCameras.ts';
+import { nearbyPublicFeeds } from './server/publicCameraFeeds.ts';
 import { localCve } from './server/localCve.ts';
 import { localIoc } from './server/localIoc.ts';
 import {
@@ -57,9 +59,13 @@ import {
   listWafSync,
   pruneAttackEvents,
   recordSensorHeartbeat,
+  insertAttackEvent,
+  listAgentSites,
+  recordAgentSite,
 } from './server/db.ts';
 import { domainVerificationStore } from './server/domainVerification.ts';
 import type { ThreatSeverity } from './src/types/cyber.ts';
+import type { AttackCategory } from './src/types/defenseGrid.ts';
 import { defenseEngine, generateFirewallRulesForIp, lookupRdapIpAbuse } from './server/defenseEngine.ts';
 import { analyzeImageBuffer } from './server/imageForensics.ts';
 import { createRateLimitMiddleware, SlidingWindowRateLimiter } from './server/rateLimiter.ts';
@@ -76,6 +82,7 @@ import {
   verifySensorToken,
 } from './server/sensorNetwork.ts';
 import {
+  deployShieldFirewallBundle,
   getWafStatus,
   isWafAutoPushEnabled,
   pushIpToWaf,
@@ -85,6 +92,9 @@ import {
 } from './server/wafProviders.ts';
 import { scanTargetOrWeb, traceAttackerIp } from './server/scanner.ts';
 import { SECURITY_TOOLS, getSecurityTool } from './server/securityStack/catalog.ts';
+import { startSecurityStackLogTailer } from './server/securityStack/logTailer.ts';
+import { startSecurityStackSupervisor } from './server/securityStack/supervisor.ts';
+import { installDockerEngine } from './server/securityStack/installer.ts';
 import { buildSecurityToolConfig, writeSecurityToolConfigs } from './server/securityStack/configs.ts';
 import {
   ingestSecurityStackPayload,
@@ -99,6 +109,7 @@ import {
 } from './server/securityStack/manager.ts';
 import type { SecurityToolId } from './src/types/securityStack.ts';
 import { threatMonitor } from './server/threatMonitor.ts';
+import { getGlobalExposureSnapshot, refreshGlobalExposure, startGlobalExposureMonitor } from './server/globalExposure.ts';
 import { startTlsFingerprintSensor, tlsSensorStatus } from './server/tlsSensor.ts';
 import { isValidIpv4 } from './server/threatRules.ts';
 import type { ScanModuleId } from './src/types/cyber.ts';
@@ -113,6 +124,10 @@ const verifyRateLimiter = createRateLimitMiddleware(
   'domain ownership verification',
 );
 
+const agentBeaconRateLimiter = createRateLimitMiddleware(
+  new SlidingWindowRateLimiter(240, 60_000),
+  'agent-beacon',
+);
 const authRateLimiter = createRateLimitMiddleware(
   new SlidingWindowRateLimiter(10, 60_000),
   'authentication',
@@ -136,6 +151,7 @@ function getErrorMessage(err: unknown): string {
 
 async function startServer() {
   const app = express();
+  app.use(express.text({ type: ['text/plain'], limit: '64kb' }));
   app.use(express.json({ limit: '20mb' }));
 
   // Real active Express defense firewall middleware (blocks defended attacker IPs)
@@ -147,7 +163,10 @@ async function startServer() {
 
   // Start continuous 24/7 global cyber threat monitor & shield watchdog loops
   threatMonitor.start();
+  startGlobalExposureMonitor();
   defenseEngine.startWatchdog();
+  startSecurityStackLogTailer();
+  startSecurityStackSupervisor();
   try {
     writeSecurityToolConfigs();
   } catch (err) {
@@ -269,6 +288,99 @@ async function startServer() {
     return res.json({ ok: true, at: new Date().toISOString() });
   });
 
+  // Public browser-agent beacon. Site owners include /sentinel-agent.js on their
+  // pages; the agent reports client-side attack indicators back to this control plane.
+  app.options('/api/agent/beacon', (_req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    return res.sendStatus(204);
+  });
+
+  app.post('/api/agent/beacon', agentBeaconRateLimiter, (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    let body: Record<string, unknown> = {};
+    if (typeof req.body === 'string') {
+      try {
+        body = JSON.parse(req.body) as Record<string, unknown>;
+      } catch {
+        return res.status(400).json({ error: 'Invalid JSON body.' });
+      }
+    } else if (req.body && typeof req.body === 'object') {
+      body = req.body as Record<string, unknown>;
+    }
+    const site = String(body.site ?? '').trim().slice(0, 200);
+    const type = String(body.type ?? 'other').trim().slice(0, 80);
+    const detail = String(body.detail ?? '').trim().slice(0, 500);
+    const pageUrl = String(body.url ?? '').trim().slice(0, 500);
+    const severityInput = String(body.severity ?? 'ELEVATED').toUpperCase();
+    const severity: ThreatSeverity = ['CRITICAL', 'HIGH', 'ELEVATED', 'CLEAN'].includes(severityInput)
+      ? (severityInput as ThreatSeverity)
+      : 'ELEVATED';
+    if (!site) return res.status(400).json({ error: 'site is required.' });
+
+    const lower = `${type} ${detail}`.toLowerCase();
+    const category: AttackCategory =
+      /xss|cross.site/.test(lower) ? 'xss'
+        : /sql|injection/.test(lower) ? 'sqli'
+        : /path|traversal|lfi|rfi/.test(lower) ? 'path-traversal'
+        : /shell|rce|command|exec/.test(lower) ? 'rce'
+        : /brute|credential|login/.test(lower) ? 'credential-stuffing'
+        : /scan|recon/.test(lower) ? 'scanner'
+        : /ddos|flood/.test(lower) ? 'ddos'
+        : /bot|miner|c2|malware/.test(lower) ? 'botnet-c2'
+        : /phish|fake|spoof/.test(lower) ? 'phishing'
+        : 'other';
+
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = (typeof forwarded === 'string' ? forwarded.split(',')[0] : req.socket.remoteAddress ?? '')
+      .trim()
+      .replace(/^::ffff:/, '') || '0.0.0.0';
+
+    const userAgent = String(req.headers['user-agent'] ?? '').slice(0, 300);
+    insertAttackEvent({
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      ip,
+      method: 'BEACON',
+      path: pageUrl || '/',
+      host: site,
+      userAgent,
+      category,
+      severity,
+      detail: `[client-agent:${site}] ${type}: ${detail}`,
+      action: 'observed',
+      source: 'sensor',
+      sensorId: `agent:${site}`,
+      requestCount: 1,
+    });
+
+    const recorded = recordAgentSite({ site, url: pageUrl, type, severity, userAgent });
+
+    const proofUrl = pageUrl || String(req.headers.origin ?? req.headers.referer ?? '');
+    let agentVerified = false;
+    try {
+      const proofHost = new URL(proofUrl).hostname.toLowerCase();
+      if (proofHost === site || proofHost.endsWith(`.${site}`)) {
+        domainVerificationStore.markVerified(site, 'agent-beacon');
+        agentVerified = true;
+      }
+    } catch {
+      // A beacon without a matching page URL is still recorded, but not trusted as ownership proof.
+    }
+
+    const state = defenseEngine.getState();
+    return res.json({
+      ok: true,
+      shield: 'SentinelGlobe client agent',
+      site: recorded,
+      agentVerified,
+      blockedDomains: state.blockedDomains.map((entry) => entry.domain).slice(0, 500),
+      mode: 'monitor',
+      at: new Date().toISOString(),
+    });
+  });
+
   // Every remaining API route requires an authenticated operator session.
   app.use('/api', (req, res, next) => {
     const stackToken = process.env.SENTINEL_STACK_INGEST_TOKEN?.trim();
@@ -278,6 +390,29 @@ async function startServer() {
       if (provided === stackToken) return next();
     }
     return requireAuth(req, res, next);
+  });
+
+  app.get('/api/agent/sites', (_req, res) => {
+    const state = defenseEngine.getState();
+    const sites = listAgentSites().map((site) => {
+      const shield = state.protectedShields.find((entry) => entry.host === site.site);
+      return {
+        ...site,
+        verified: domainVerificationStore.isDomainVerified(site.site),
+        shield: shield
+          ? { id: shield.id, status: shield.status, verdict: shield.verdict, activatedAt: shield.activatedAt }
+          : null,
+      };
+    });
+    return res.json({
+      sites,
+      summary: {
+        total: sites.length,
+        online: sites.filter((site) => Date.now() - Date.parse(site.lastSeen) < 15 * 60 * 1000).length,
+        protected: sites.filter((site) => site.shield).length,
+        threats: sites.reduce((sum, site) => sum + site.threats, 0),
+      },
+    });
   });
 
   // Real public location of the scanning node (used to draw live attack lines on the map)
@@ -297,6 +432,15 @@ async function startServer() {
   });
 
   // Live Radar & Continuous Global Threat Snapshot
+  app.get('/api/exposure/global', requireAuth, (_req, res) => {
+    return res.json(getGlobalExposureSnapshot());
+  });
+
+  app.post('/api/exposure/global/refresh', requireAuth, async (_req, res) => {
+    const snapshot = await refreshGlobalExposure();
+    return res.json(snapshot);
+  });
+
   app.get('/api/radar', async (req, res) => {
     const forceRefresh = req.query.refresh === '1';
     try {
@@ -550,6 +694,26 @@ async function startServer() {
     return res.status(result.ok ? 200 : 502).json(result);
   });
 
+  app.get('/api/cameras/public-nearby', async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lon = Number(req.query.lon);
+    const radius = Number(req.query.radius ?? 25);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return res.status(400).json({ error: 'Valid lat and lon are required.' });
+    }
+    const cameras = await nearbyPublicFeeds(lat, lon, Math.min(Math.max(radius, 0.5), 100));
+    return res.json({ ok: true, cameras, fetchedAt: new Date().toISOString() });
+  });
+
+  app.get('/api/cameras/osm-bbox', async (req, res) => {
+    const south = Number(req.query.south);
+    const west = Number(req.query.west);
+    const north = Number(req.query.north);
+    const east = Number(req.query.east);
+    const result = await findOsmSurveillanceBbox(south, west, north, east);
+    return res.status(result.ok ? 200 : 502).json(result);
+  });
+
   app.post('/api/cameras', (req, res) => {
     const result = cameraRegistry.add(req.body ?? {});
     if (!result.ok) return res.status(400).json({ error: result.error });
@@ -750,6 +914,23 @@ async function startServer() {
 
   app.get('/api/waf/log', (_req, res) => {
     return res.json({ log: listWafSync(80) });
+  });
+
+  app.get('/api/defense/shield/:id/firewall', (req, res) => {
+    const shield = defenseEngine.getShield(String(req.params.id ?? ''));
+    if (!shield) return res.status(404).json({ error: 'Shield not found.' });
+    const bundle = defenseEngine.getState().shieldFirewallBundles?.[shield.id];
+    if (!bundle) return res.status(404).json({ error: 'No firewall bundle is available for this shield.' });
+    return res.json({ shield: { id: shield.id, host: shield.host }, bundle });
+  });
+
+  app.post('/api/defense/shield/:id/deploy', (req, res) => {
+    const shield = defenseEngine.getShield(String(req.params.id ?? ''));
+    if (!shield) return res.status(404).json({ error: 'Shield not found.' });
+    const bundle = defenseEngine.getState().shieldFirewallBundles?.[shield.id];
+    if (!bundle) return res.status(404).json({ error: 'No firewall bundle is available for this shield.' });
+    const result = deployShieldFirewallBundle(shield.id, shield.host, bundle);
+    return res.json({ ok: result.ok, detail: result.detail, directory: result.directory, files: result.files });
   });
 
   // ---- Control Center: alert integrations ----
@@ -962,6 +1143,20 @@ async function startServer() {
     return res.json({ toolId: tool.id, lines: await getSecurityToolLogs(tool.id, tail) });
   });
 
+  app.post('/api/security-stack/install-docker', requireAuth, async (_req, res) => {
+    const result = await installDockerEngine();
+    return res.status(result.ok ? 200 : 502).json(result);
+  });
+
+  app.post('/api/security-stack/start-all', requireAuth, async (_req, res) => {
+    const results = [];
+    for (const tool of SECURITY_TOOLS) {
+      if (tool.deployment === 'appliance') continue;
+      results.push({ id: tool.id, ...(await startSecurityTool(tool.id)) });
+    }
+    return res.json({ results, snapshot: await getSecurityStackSnapshot() });
+  });
+
   app.post('/api/security-stack/:id/start', requireAuth, async (req, res) => {
     const tool = getSecurityTool(req.params.id);
     if (!tool) return res.status(404).json({ error: 'Unknown security tool.' });
@@ -1004,6 +1199,7 @@ async function startServer() {
   app.post('/api/defense/block-ip', async (req, res) => {
     const ip = String(req.body?.ip ?? '').trim();
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+    const assetId = typeof req.body?.assetId === 'string' ? req.body.assetId : undefined;
     const requestedSeverity = String(req.body?.severity ?? '').toUpperCase();
     const severity: ThreatSeverity | undefined = ['CRITICAL', 'HIGH', 'ELEVATED'].includes(
       requestedSeverity,
@@ -1014,7 +1210,14 @@ async function startServer() {
       return res.status(400).json({ error: 'Valid IPv4 address required.' });
     }
     try {
-      const entry = await defenseEngine.defendAttackerIp(ip, reason, severity);
+      const shield = assetId ? defenseEngine.getShield(assetId) : undefined;
+      if (assetId && !shield) {
+        return res.status(404).json({ error: 'Protected site not found for this assetId.' });
+      }
+      const entry = await defenseEngine.defendAttackerIp(ip, reason, severity, {
+        shieldId: shield?.id,
+        shieldHost: shield?.host,
+      });
       return res.json({ entry, state: defenseEngine.getState() });
     } catch (err) {
       return res.status(502).json({
@@ -1024,9 +1227,9 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/defense/block-ip/:ip', (req, res) => {
+  app.delete('/api/defense/block-ip/:ip', async (req, res) => {
     const ip = String(req.params.ip ?? '').trim();
-    defenseEngine.unblockIp(ip);
+    await defenseEngine.unblockIp(ip);
     return res.json({ state: defenseEngine.getState() });
   });
 
@@ -1057,6 +1260,14 @@ async function startServer() {
     const target = String(req.body?.target ?? '').trim();
     if (target.length < 3) {
       return res.status(400).json({ error: 'Valid domain or URL required to activate shield.' });
+    }
+    if (!domainVerificationStore.isDomainVerified(target)) {
+      const verification = domainVerificationStore.getStatus(target);
+      return res.status(403).json({
+        error:
+          'Domain ownership verification is required before activating a shield. Add the DNS TXT record or well-known file, then verify ownership.',
+        verification,
+      });
     }
     try {
       const shield = await defenseEngine.activateWebsiteShield(target);

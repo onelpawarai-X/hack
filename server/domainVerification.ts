@@ -3,6 +3,7 @@ import { resolveTxt } from 'node:dns/promises';
 import type { DomainVerificationStatus } from '../src/types/cyber.ts';
 import { extractRootDomain } from './osintParsers.ts';
 import { assertSafePublicUrl } from './ssrfGuard.ts';
+import { getConfig, setConfig } from './db.ts';
 
 const VERIFICATION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours authorization lease
 
@@ -15,7 +16,7 @@ function getSigningSecret(): string {
 
 export interface VerifiedDomainGrant {
   domain: string;
-  method: 'dns-txt' | 'http-file';
+  method: 'dns-txt' | 'http-file' | 'agent-beacon';
   verifiedAt: string;
   expiresAt: number;
   token: string;
@@ -54,8 +55,33 @@ export function matchesHttpVerificationBody(body: string, expectedToken: string)
 
 class DomainVerificationStore {
   private readonly grants = new Map<string, VerifiedDomainGrant>();
+  private loaded = false;
+
+  private load(): void {
+    if (this.loaded) return;
+    this.loaded = true;
+    try {
+      const raw = getConfig('domainVerification.grants');
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, VerifiedDomainGrant>;
+      for (const [domain, grant] of Object.entries(parsed)) {
+        if (grant && grant.expiresAt > Date.now()) this.grants.set(domain, grant);
+      }
+    } catch {
+      // A corrupt cache must not block verification.
+    }
+  }
+
+  private persist(): void {
+    try {
+      setConfig('domainVerification.grants', JSON.stringify(Object.fromEntries(this.grants)));
+    } catch {
+      // Verification remains valid for this process even if persistence fails.
+    }
+  }
 
   public getStatus(rawTarget: string): DomainVerificationStatus {
+    this.load();
     const domain = normalizeVerificationDomain(rawTarget);
     const token = buildDomainVerificationToken(domain);
     const grant = this.grants.get(domain);
@@ -64,6 +90,7 @@ class DomainVerificationStore {
 
     if (grant && !isActiveGrant) {
       this.grants.delete(domain);
+      this.persist();
     }
 
     const expiresIso = isActiveGrant
@@ -85,18 +112,21 @@ class DomainVerificationStore {
   }
 
   public isDomainVerified(rawTarget: string, now = Date.now()): boolean {
+    this.load();
     const domain = normalizeVerificationDomain(rawTarget);
     if (!domain) return false;
     const grant = this.grants.get(domain);
     if (!grant) return false;
     if (grant.expiresAt <= now) {
       this.grants.delete(domain);
+      this.persist();
       return false;
     }
     return true;
   }
 
-  public markVerified(domain: string, method: 'dns-txt' | 'http-file', now = Date.now()): VerifiedDomainGrant {
+  public markVerified(domain: string, method: 'dns-txt' | 'http-file' | 'agent-beacon', now = Date.now()): VerifiedDomainGrant {
+    this.load();
     const normalized = normalizeVerificationDomain(domain);
     const token = buildDomainVerificationToken(normalized);
     const grant: VerifiedDomainGrant = {
@@ -107,12 +137,13 @@ class DomainVerificationStore {
       token,
     };
     this.grants.set(normalized, grant);
+    this.persist();
     return grant;
   }
 
   public async verifyDomainOwnership(
     rawTarget: string,
-    method: 'dns-txt' | 'http-file',
+    method: 'dns-txt' | 'http-file' | 'agent-beacon',
   ): Promise<DomainVerificationStatus> {
     const domain = normalizeVerificationDomain(rawTarget);
     if (!domain || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) {

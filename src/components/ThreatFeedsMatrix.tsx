@@ -2,6 +2,7 @@ import {
   Check,
   Copy,
   Crosshair,
+  Download,
   ExternalLink,
   Mail,
   RefreshCw,
@@ -46,6 +47,7 @@ interface ThreatFeedsMatrixProps {
   onRemoveSinkhole: (domain: string) => void;
   onRecheckShield: (id: string) => void;
   onRemoveShield: (id: string) => void;
+  onDeployShield: (id: string) => void;
 }
 
 export function ThreatFeedsMatrix({
@@ -69,6 +71,7 @@ export function ThreatFeedsMatrix({
   onRemoveSinkhole,
   onRecheckShield,
   onRemoveShield,
+  onDeployShield,
 }: ThreatFeedsMatrixProps) {
   const [filterQuery, setFilterQuery] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -535,6 +538,14 @@ export function ThreatFeedsMatrix({
                         </button>
                         <button
                           type="button"
+                          onClick={() => onDeployShield(shield.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-900 border border-slate-700 hover:border-cyan-500/50 text-slate-200 cursor-pointer"
+                        >
+                          <Download className="w-3 h-3" aria-hidden="true" />
+                          <span>{lang === 'bn' ? 'রুল ডিপ্লয়' : 'Deploy rules'}</span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onRemoveShield(shield.id)}
                           aria-label={t.defense.removeBtn}
                           className="p-1.5 rounded bg-slate-900 border border-slate-700 hover:border-red-500/50 text-slate-400 hover:text-red-300 cursor-pointer"
@@ -592,6 +603,40 @@ export function ThreatFeedsMatrix({
                         {shield.nginxHardeningConfig}
                       </pre>
                     </div>
+
+                    {defenseState.shieldFirewallBundles?.[shield.id] && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-300">
+                            Site block rules (Nginx)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              copyText(
+                                `shield-block-${shield.id}`,
+                                defenseState.shieldFirewallBundles?.[shield.id]?.nginxDenyList ?? '',
+                              )
+                            }
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-[11px] text-slate-200 cursor-pointer"
+                          >
+                            {copiedKey === `shield-block-${shield.id}` ? (
+                              <Check className="w-3 h-3 text-emerald-400" aria-hidden="true" />
+                            ) : (
+                              <Copy className="w-3 h-3" aria-hidden="true" />
+                            )}
+                            <span>
+                              {copiedKey === `shield-block-${shield.id}`
+                                ? t.defense.copiedBtn
+                                : t.defense.copyBtn}
+                            </span>
+                          </button>
+                        </div>
+                        <pre className="p-2.5 rounded bg-[#05070B] border border-slate-800 text-[10px] font-mono text-red-200 overflow-x-auto max-h-24">
+                          {defenseState.shieldFirewallBundles?.[shield.id]?.nginxDenyList}
+                        </pre>
+                      </div>
+                    )}
 
                     {shield.recommendedDnsRecords.length > 0 && (
                       <div className="p-2.5 rounded bg-[#05070B] border border-slate-800 font-mono text-[10px] text-amber-200 space-y-0.5">

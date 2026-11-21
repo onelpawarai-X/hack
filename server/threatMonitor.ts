@@ -11,6 +11,7 @@ import { listAttackEvents } from './db.ts';
 import { traceAttackerIp } from './ipAttribution.ts';
 import { localCve } from './localCve.ts';
 import { localIoc } from './localIoc.ts';
+import { publicThreatFeeds } from './publicThreatFeeds.ts';
 import { isPrivateOrReservedIp } from './threatRules.ts';
 
 const REFRESH_INTERVAL_MS = 60_000;
@@ -75,6 +76,7 @@ class ThreatMonitorService {
 
     const iocEntries = localIoc.all();
     const eventRows = listAttackEvents({ limit: 250 });
+    const publicFeeds = await publicThreatFeeds.get().catch(() => null);
     const candidateIps = new Map<string, { ip: string; tags: string[]; firstSeen?: string; lastSeen?: string }>();
 
     for (const entry of iocEntries) {
@@ -101,6 +103,16 @@ class ThreatMonitorService {
           // Domain IOC without a current A record stays in the local store only.
         }
       }
+    }
+
+    for (const entry of publicFeeds?.ipIndicators ?? []) {
+      const existing = candidateIps.get(entry.ip);
+      candidateIps.set(entry.ip, {
+        ip: entry.ip,
+        tags: Array.from(new Set([...(existing?.tags ?? []), ...entry.tags])),
+        firstSeen: existing?.firstSeen,
+        lastSeen: new Date().toISOString(),
+      });
     }
 
     for (const event of eventRows) {
@@ -152,7 +164,7 @@ class ThreatMonitorService {
       for (const node of traced) if (node) nodes.push(node);
     }
 
-    const phishingTraps: PhishingTrap[] = iocEntries
+    const localPhishing: PhishingTrap[] = iocEntries
       .filter((entry) => entry.type === 'domain' && entry.tags.includes('phishing'))
       .slice(0, 40)
       .map((entry) => ({
@@ -165,9 +177,20 @@ class ThreatMonitorService {
         detectedAt: entry.addedAt ?? nowIso,
       }));
 
-    const cves: ExploitedCve[] = [];
-    const incidents: CyberIncident[] = [];
+    const seenPhish = new Set<string>();
+    const phishingTraps: PhishingTrap[] = [
+      ...localPhishing,
+      ...(publicFeeds?.phishingTraps ?? []),
+    ].filter((item) => {
+      if (seenPhish.has(item.url)) return false;
+      seenPhish.add(item.url);
+      return true;
+    }).slice(0, 60);
+
+    const cves: ExploitedCve[] = publicFeeds?.cves ?? [];
+    const incidents: CyberIncident[] = publicFeeds?.incidents ?? [];
     const feedHealth: FeedHealthItem[] = [
+      ...(publicFeeds?.health ?? []),
       {
         name: 'Local IOC store',
         status: iocEntries.length > 0 ? 'online' : 'degraded',
@@ -192,12 +215,16 @@ class ThreatMonitorService {
       scanCycleCount: this.cycleCount,
       feedHealth,
       summary: {
-        activeAttackers: uniqueAttackers + iocEntries.filter((entry) => entry.type === 'ip').length,
-        c2Botnets: iocEntries.filter((entry) => entry.tags.includes('c2')).length,
+        activeAttackers: candidateIps.size,
+        c2Botnets:
+          iocEntries.filter((entry) => entry.tags.includes('c2')).length +
+          (publicFeeds?.ipIndicators ?? []).filter((entry) => entry.tags.includes('c2')).length,
         phishingTraps: phishingTraps.length,
         exploitedCves: cves.length,
         globalIncidents: incidents.length,
-        torExitNodes: iocEntries.filter((entry) => entry.tags.includes('tor')).length,
+        torExitNodes:
+          iocEntries.filter((entry) => entry.tags.includes('tor')).length +
+          (publicFeeds?.ipIndicators ?? []).filter((entry) => entry.tags.includes('tor')).length,
       },
       threatNodes: nodes,
       phishingTraps,

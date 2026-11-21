@@ -63,6 +63,53 @@ function writeBundle(ips: string[]) {
   fs.writeFileSync(path.join(ENFORCEMENT_DIR, 'iptables.sh'), iptables, 'utf8');
 }
 
+export interface ShieldFirewallBundle {
+  nginxDenyList: string;
+  iptablesScript: string;
+  dnsSinkholeHosts: string;
+  cloudflareWafExpr: string;
+}
+
+export function deployShieldFirewallBundle(
+  shieldId: string,
+  host: string,
+  bundle: ShieldFirewallBundle,
+): { ok: boolean; detail: string; directory: string; files: string[] } {
+  const safeId = shieldId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const directory = path.join(ENFORCEMENT_DIR, 'shields', safeId);
+  fs.mkdirSync(directory, { recursive: true });
+  const readme = [
+    `# SentinelGlobe shield rules for ${host}`,
+    '',
+    'These files are generated from the live defense state. Deploy them on the',
+    'protected site, not on the SentinelGlobe control plane.',
+    '',
+    '- nginx-deny.conf: include inside the site server block.',
+    '- iptables.sh: run as root on the protected host.',
+    '- cloudflare-waf.txt: paste into a Cloudflare WAF custom rule expression.',
+    '- dns-sinkhole.hosts: optional hosts-file sinkhole entries.',
+    '',
+    `Generated: ${new Date().toISOString()}`,
+  ].join('\n');
+  const files: Array<[string, string]> = [
+    ['nginx-deny.conf', bundle.nginxDenyList],
+    ['iptables.sh', bundle.iptablesScript],
+    ['cloudflare-waf.txt', bundle.cloudflareWafExpr],
+    ['dns-sinkhole.hosts', bundle.dnsSinkholeHosts],
+    ['README.md', readme],
+  ];
+  for (const [name, content] of files) {
+    fs.writeFileSync(path.join(directory, name), `${content.trim()}\n`, 'utf8');
+  }
+  logWaf('local', 'deploy-shield', host, 'ok', `Wrote ${files.length} files to ${directory}`);
+  return {
+    ok: true,
+    detail: `Wrote ${files.length} files for ${host}`,
+    directory,
+    files: files.map(([name]) => path.join(directory, name)),
+  };
+}
+
 export function isWafAutoPushEnabled(): boolean {
   return getConfig('waf.autoPush') !== 'false';
 }

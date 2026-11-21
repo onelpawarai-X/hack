@@ -12,6 +12,7 @@ import type {
 import { scanTargetOrWeb, traceAttackerIp } from './scanner.ts';
 import { lookupAsn, lookupWhoisDomain, lookupWhoisIp } from './nativeIntel.ts';
 import { isValidIpv4 } from './threatRules.ts';
+import { applyIpBlock, removeIpBlock } from './hostFirewall.ts';
 
 const STATE_FILE_PATH = path.resolve(process.cwd(), '.sentinel-defense-state.json');
 
@@ -203,9 +204,19 @@ class DefenseEngine {
 
   startWatchdog() {
     if (this.watchdogTimer) return;
+    void this.reapplyFirewallRules();
     this.watchdogTimer = setInterval(() => {
       void this.recheckAllWatchdogs();
     }, 120_000);
+  }
+
+  private async reapplyFirewallRules(): Promise<void> {
+    for (const entry of this.blockedIps.values()) {
+      if (entry.scope === 'protected-site') continue;
+      const enforcement = await applyIpBlock(entry.ip);
+      if (enforcement.applied) entry.firewallEnforcement = enforcement;
+    }
+    this.saveToDisk();
   }
 
   onBlock(listener: (entry: BlockedIpEntry) => void): () => void {
@@ -246,18 +257,34 @@ class DefenseEngine {
     const protectedShields = Array.from(this.protectedShields.values()).sort((a, b) =>
       b.activatedAt.localeCompare(a.activatedAt),
     );
+    const localBlockedIps = blockedIps.filter((entry) => entry.scope !== 'protected-site');
+    const shieldFirewallBundles = Object.fromEntries(
+      protectedShields.map((shield) => [
+        shield.id,
+        generateGlobalFirewallBundle(
+          blockedIps.filter((entry) => entry.shieldId === shield.id),
+          [],
+        ),
+      ]),
+    );
     return {
       blockedIps,
       blockedDomains,
       protectedShields,
-      globalFirewallBundle: generateGlobalFirewallBundle(blockedIps, blockedDomains),
+      globalFirewallBundle: generateGlobalFirewallBundle(localBlockedIps, blockedDomains),
+      shieldFirewallBundles,
     };
+  }
+
+  getShield(id: string): ProtectedSystemShield | undefined {
+    return this.protectedShields.get(id);
   }
 
   async defendAttackerIp(
     ip: string,
     reason?: string,
     severity?: ThreatSeverity,
+    scope?: { shieldId?: string; shieldHost?: string },
   ): Promise<BlockedIpEntry> {
     const cleanIp = ip.trim();
     const [trace, rdap] = await Promise.all([
@@ -266,8 +293,12 @@ class DefenseEngine {
     ]);
 
     const now = new Date().toISOString();
+    const shield = scope?.shieldId ? this.protectedShields.get(scope.shieldId) : undefined;
     const entry: BlockedIpEntry = {
       ip: cleanIp,
+      scope: shield ? 'protected-site' : 'local',
+      shieldId: shield?.id,
+      shieldHost: shield?.host,
       blockedAt: this.blockedIps.get(cleanIp)?.blockedAt ?? now,
       lastCheckedAt: now,
       reason:
@@ -289,6 +320,12 @@ class DefenseEngine {
       firewallRules: generateFirewallRulesForIp(cleanIp),
     };
 
+    entry.firewallEnforcement = shield
+      ? {
+          applied: false,
+          detail: `Rule generated for protected site ${shield.host}. Deploy it through that site's agent or WAF; this control plane does not add a local host rule.`,
+        }
+      : await applyIpBlock(cleanIp);
     this.blockedIps.set(cleanIp, entry);
     this.saveToDisk();
     for (const listener of this.blockListeners) {
@@ -301,9 +338,14 @@ class DefenseEngine {
     return entry;
   }
 
-  unblockIp(ip: string): boolean {
-    const deleted = this.blockedIps.delete(ip.trim());
-    if (deleted) this.saveToDisk();
+  async unblockIp(ip: string): Promise<boolean> {
+    const cleanIp = ip.trim();
+    const entry = this.blockedIps.get(cleanIp);
+    const deleted = this.blockedIps.delete(cleanIp);
+    if (deleted) {
+      if (entry?.scope !== 'protected-site') await removeIpBlock(cleanIp);
+      this.saveToDisk();
+    }
     return deleted;
   }
 

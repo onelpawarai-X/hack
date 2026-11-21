@@ -105,6 +105,19 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_waf_sync_ts ON waf_sync_log(ts DESC);
 
+  CREATE TABLE IF NOT EXISTS agent_sites (
+    site TEXT PRIMARY KEY,
+    url TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    beacons INTEGER NOT NULL DEFAULT 0,
+    threats INTEGER NOT NULL DEFAULT 0,
+    last_type TEXT,
+    last_severity TEXT,
+    user_agent TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_sites_last_seen ON agent_sites(last_seen DESC);
+
   DROP TABLE IF EXISTS canary_tokens;
   DELETE FROM attack_events
   WHERE source = 'canarytokens'
@@ -230,6 +243,99 @@ export function listAttackEvents(query: EventQuery = {}): AttackEventRow[] {
     cipher: row.cipher ? String(row.cipher) : undefined,
     subnet: row.subnet ? String(row.subnet) : undefined,
   }));
+}
+
+export interface AgentSiteRow {
+  site: string;
+  url: string;
+  firstSeen: string;
+  lastSeen: string;
+  beacons: number;
+  threats: number;
+  lastType: string;
+  lastSeverity: string;
+  userAgent?: string;
+}
+
+export function recordAgentSite(input: {
+  site: string;
+  url?: string;
+  type?: string;
+  severity?: string;
+  userAgent?: string;
+}): AgentSiteRow {
+  const now = new Date().toISOString();
+  const threat = input.severity && input.severity !== 'CLEAN' ? 1 : 0;
+  db.prepare(
+    `INSERT INTO agent_sites (site, url, first_seen, last_seen, beacons, threats, last_type, last_severity, user_agent)
+     VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+     ON CONFLICT(site) DO UPDATE SET
+       url = COALESCE(NULLIF(excluded.url, ''), agent_sites.url),
+       last_seen = excluded.last_seen,
+       beacons = agent_sites.beacons + 1,
+       threats = agent_sites.threats + excluded.threats,
+       last_type = excluded.last_type,
+       last_severity = excluded.last_severity,
+       user_agent = COALESCE(NULLIF(excluded.user_agent, ''), agent_sites.user_agent)`,
+  ).run(
+    input.site,
+    input.url ?? '',
+    now,
+    now,
+    threat,
+    input.type ?? 'other',
+    input.severity ?? 'CLEAN',
+    input.userAgent ?? '',
+  );
+  const row = db.prepare('SELECT * FROM agent_sites WHERE site = ?').get(input.site) as
+    | Record<string, unknown>
+    | undefined;
+  return {
+    site: String(row?.site ?? input.site),
+    url: String(row?.url ?? ''),
+    firstSeen: String(row?.first_seen ?? now),
+    lastSeen: String(row?.last_seen ?? now),
+    beacons: Number(row?.beacons ?? 1),
+    threats: Number(row?.threats ?? threat),
+    lastType: String(row?.last_type ?? input.type ?? 'other'),
+    lastSeverity: String(row?.last_severity ?? input.severity ?? 'CLEAN'),
+    userAgent: row?.user_agent ? String(row.user_agent) : undefined,
+  };
+}
+
+export function listAgentSites(limit = 200): AgentSiteRow[] {
+  const rows = db
+    .prepare('SELECT * FROM agent_sites ORDER BY last_seen DESC LIMIT ?')
+    .all(Math.min(Math.max(limit, 1), 1000)) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    site: String(row.site),
+    url: String(row.url ?? ''),
+    firstSeen: String(row.first_seen),
+    lastSeen: String(row.last_seen),
+    beacons: Number(row.beacons ?? 0),
+    threats: Number(row.threats ?? 0),
+    lastType: String(row.last_type ?? 'other'),
+    lastSeverity: String(row.last_severity ?? 'CLEAN'),
+    userAgent: row.user_agent ? String(row.user_agent) : undefined,
+  }));
+}
+
+export function getAgentSite(site: string): AgentSiteRow | null {
+  const row = db.prepare('SELECT * FROM agent_sites WHERE site = ?').get(site) as
+    | Record<string, unknown>
+    | undefined;
+  if (!row) return null;
+  return {
+    site: String(row.site),
+    url: String(row.url ?? ''),
+    firstSeen: String(row.first_seen),
+    lastSeen: String(row.last_seen),
+    beacons: Number(row.beacons ?? 0),
+    threats: Number(row.threats ?? 0),
+    lastType: String(row.last_type ?? 'other'),
+    lastSeverity: String(row.last_severity ?? 'CLEAN'),
+    userAgent: row.user_agent ? String(row.user_agent) : undefined,
+  };
 }
 
 export function countAttackEvents(): number {

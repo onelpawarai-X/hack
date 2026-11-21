@@ -1,0 +1,24 @@
+[Unit]
+Description=SentinelGlobe cyber threat monitoring and defense grid
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentinel
+Group=sentinel
+WorkingDirectory=/opt/sentinelglobe
+EnvironmentFile=/opt/sentinelglobe/.env
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node /opt/sentinelglobe/node_modules/tsx/dist/cli.mjs server.ts
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/sentinelglobe/.sentinel /opt/sentinelglobe/data /opt/sentinelglobe/logs /opt/sentinelglobe/security-stack/logs
+
+[Install]
+WantedBy=multi-user.target
