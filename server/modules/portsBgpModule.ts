@@ -38,8 +38,12 @@ export const portsBgpModule: ScanModulePlugin = {
       targetIps = candidateA.filter((ip) => isValidIpv4(ip)).slice(0, 3);
     }
 
-    if (targetIps.length === 0) return;
+    if (targetIps.length === 0) {
+      ctx.log('No public IPv4 address available for BGP attribution', 'warn', 'portsBgp');
+      return;
+    }
 
+    ctx.log(`Attributing ${targetIps.join(', ')} via Shodan InternetDB, RDAP and RIPE Stat`, 'info', 'portsBgp');
     const [attributionResults, bgpProfile] = await Promise.all([
       Promise.all(targetIps.map((ip) => traceAttackerIp(ip))),
       fetchBgpRouteProfile(targetIps[0]),
@@ -47,6 +51,28 @@ export const portsBgpModule: ScanModulePlugin = {
 
     ctx.attribution = attributionResults.filter((n): n is ThreatNode => n !== null);
     ctx.bgpProfile = bgpProfile;
+
+    for (const node of ctx.attribution) {
+      ctx.log(
+        `${node.ip} · ${node.city || 'Unknown'}, ${node.country || 'Unknown'} · ${node.asn} · ${node.isp}`,
+        'success',
+        'portsBgp',
+      );
+      if ((node.openPorts?.length ?? 0) > 0) {
+        ctx.log(
+          `Passive port telemetry for ${node.ip}: ${node.openPorts!.join(', ')}`,
+          'info',
+          'portsBgp',
+        );
+      }
+    }
+    if (ctx.bgpProfile) {
+      ctx.log(
+        `BGP prefix ${ctx.bgpProfile.prefix} announced by ${ctx.bgpProfile.asns.map((a) => `AS${a.asn}`).join(', ') || 'unknown ASN'}`,
+        'info',
+        'portsBgp',
+      );
+    }
 
     const allVulns = Array.from(
       new Set(ctx.attribution.flatMap((a) => a.knownVulns ?? [])),

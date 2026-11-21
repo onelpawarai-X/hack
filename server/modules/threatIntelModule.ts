@@ -8,6 +8,7 @@ export const threatIntelModule: ScanModulePlugin = {
   isActive: false,
   supportsTargetType: (t) => t === 'ip' || t === 'domain' || t === 'url',
   async run(ctx) {
+    ctx.log('Cross-referencing target against live threat feeds', 'info', 'threatIntel');
     await threatMonitor.getSnapshot(false);
 
     if (ctx.targetType === 'ip') {
@@ -18,6 +19,13 @@ export const threatIntelModule: ScanModulePlugin = {
           detail: 'IP operates as an active Tor Network Exit Node',
         });
       }
+      ctx.log(
+        ctx.feedMatches.length > 0
+          ? `${ctx.feedMatches.length} live threat feed match(es) found`
+          : 'No live threat feed match for this IP',
+        ctx.feedMatches.length > 0 ? 'warn' : 'success',
+        'threatIntel',
+      );
       return;
     }
 
@@ -36,5 +44,16 @@ export const threatIntelModule: ScanModulePlugin = {
         }
       }
     }
+
+    if (ctx.heuristicWarnings.length > 0) {
+      ctx.log(`Phishing trap heuristic: ${ctx.heuristicWarnings.join('; ')}`, 'warn', 'threatIntel');
+    }
+    ctx.log(
+      ctx.feedMatches.length > 0
+        ? `${ctx.feedMatches.length} live threat feed match(es) found`
+        : 'No live threat feed match for this target',
+      ctx.feedMatches.length > 0 ? 'warn' : 'success',
+      'threatIntel',
+    );
   },
 };

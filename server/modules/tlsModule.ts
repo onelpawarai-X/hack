@@ -81,6 +81,17 @@ export const tlsModule: ScanModulePlugin = {
   isActive: false,
   supportsTargetType: (t) => t === 'domain' || t === 'url',
   async run(ctx) {
-    ctx.tls = await inspectTlsCertificate(ctx.host);
+    ctx.log(`Starting TLS handshake with ${ctx.host}:443`, 'info', 'tls');
+    const certificate = await inspectTlsCertificate(ctx.host);
+    ctx.tls = certificate;
+    if (certificate?.valid) {
+      ctx.log(
+        `TLS handshake OK · ${certificate.protocol ?? 'TLS'} · ${certificate.issuer ?? 'trusted CA'} · ${certificate.daysRemaining ?? '?'} day(s) remaining`,
+        'success',
+        'tls',
+      );
+    } else {
+      ctx.log(`TLS handshake failed · ${certificate?.error ?? 'invalid certificate'}`, 'error', 'tls');
+    }
   },
 };

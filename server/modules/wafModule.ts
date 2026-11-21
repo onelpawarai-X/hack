@@ -187,5 +187,15 @@ export const wafModule: ScanModulePlugin = {
       ctx.rawSetCookies,
       ctx.dns.ns,
     );
+
+    if (ctx.waf.detected) {
+      ctx.log(
+        `Edge WAF/CDN detected · ${ctx.waf.provider} (${ctx.waf.confidence} confidence)`,
+        'success',
+        'waf',
+      );
+    } else {
+      ctx.log('No edge WAF or CDN signature detected', 'warn', 'waf');
+    }
   },
 };

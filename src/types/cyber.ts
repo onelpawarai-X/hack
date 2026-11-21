@@ -152,8 +152,35 @@ export type ScanModuleId =
   | 'portsBgp'
   | 'osintMeta'
   | 'waf'
+  | 'portScan'
   | 'sensitiveFiles'
   | 'activeVulns';
+
+export interface PortScanFinding {
+  port: number;
+  state: 'open' | 'filtered';
+  service: string;
+  banner?: string;
+  latencyMs?: number;
+  riskLevel: RiskLevel;
+}
+
+export interface PortScanReport {
+  host: string;
+  method: 'tcp-connect';
+  scannedPorts: number[];
+  openPorts: PortScanFinding[];
+  serviceFingerprint: string[];
+  startedAt: string;
+  completedAt: string;
+}
+
+export interface TechFingerprint {
+  name: string;
+  category: 'server' | 'framework' | 'platform' | 'cdn' | 'language' | 'database';
+  confidence: 'High' | 'Medium' | 'Low';
+  evidence: string;
+}
 
 export type RiskLevel = 'Critical' | 'High' | 'Medium' | 'Low' | 'Info';
 
@@ -290,6 +317,9 @@ export interface TargetScanResult {
   skippedActiveModules?: Array<{ moduleId: ScanModuleId; reason: string }>;
   ownershipVerified?: boolean;
   waf?: WafDetectionResult | null;
+  portScan?: PortScanReport | null;
+  techStack?: TechFingerprint[];
+  excludedCves?: Array<{ cveId: string; reason: string }>;
   sensitivePaths?: SensitivePathFinding[];
   activeVulns?: ActiveVulnFinding[];
   findings?: SecurityFinding[];

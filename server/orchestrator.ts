@@ -4,6 +4,7 @@ import type {
   ScanProgressEvent,
   TargetScanResult,
 } from '../src/types/cyber.ts';
+import type { ScanLogEvent } from '../src/types/realtime.ts';
 import { domainVerificationStore } from './domainVerification.ts';
 import {
   buildCategorizedFindings,
@@ -13,18 +14,19 @@ import { activeVulnsModule } from './modules/activeVulnsModule.ts';
 import { dnsModule } from './modules/dnsModule.ts';
 import { headersModule } from './modules/headersModule.ts';
 import { osintMetaModule, searchWebBreachSignals } from './modules/osintMetaModule.ts';
+import { portScanModule } from './modules/portScanModule.ts';
 import { fetchMitreCveDetail, portsBgpModule } from './modules/portsBgpModule.ts';
 import { sensitiveFilesModule } from './modules/sensitiveFilesModule.ts';
 import { threatIntelModule } from './modules/threatIntelModule.ts';
 import { tlsModule } from './modules/tlsModule.ts';
 import {
   ALL_SCAN_MODULES,
-  PASSIVE_SCAN_MODULES,
   type ScanExecutionContext,
   type ScanModulePlugin,
 } from './modules/types.ts';
 import { wafModule } from './modules/wafModule.ts';
 import { extractRootDomain } from './osintParsers.ts';
+import { detectTechStack, filterContextualCves } from './techStack.ts';
 import { threatMonitor } from './threatMonitor.ts';
 import {
   computeTargetVerdict,
@@ -40,6 +42,7 @@ export const MODULE_REGISTRY: Record<ScanModuleId, ScanModulePlugin> = {
   portsBgp: portsBgpModule,
   osintMeta: osintMetaModule,
   waf: wafModule,
+  portScan: portScanModule,
   sensitiveFiles: sensitiveFilesModule,
   activeVulns: activeVulnsModule,
 };
@@ -48,13 +51,14 @@ export const MODULE_REGISTRY: Record<ScanModuleId, ScanModulePlugin> = {
 const EXECUTION_WAVES: ScanModuleId[][] = [
   ['dns', 'tls', 'headers', 'osintMeta'],
   ['threatIntel', 'portsBgp', 'waf'],
-  ['sensitiveFiles', 'activeVulns'],
+  ['portScan', 'sensitiveFiles', 'activeVulns'],
 ];
 
 export interface OrchestratorOptions {
   target: string;
   modules?: ScanModuleId[];
   onProgress?: (event: ScanProgressEvent) => void;
+  onLog?: (event: ScanLogEvent) => void;
   // Used in deterministic unit tests without live network verification
   verifyOwnershipFn?: (domain: string) => boolean;
   customRegistry?: Partial<Record<ScanModuleId, ScanModulePlugin>>;
@@ -62,11 +66,12 @@ export interface OrchestratorOptions {
 
 export function normalizeSelectedModules(modules?: ScanModuleId[]): ScanModuleId[] {
   if (!Array.isArray(modules) || modules.length === 0) {
-    return [...PASSIVE_SCAN_MODULES];
+    // Select every module; the ethical gate still blocks active probes until ownership is proven
+    return [...ALL_SCAN_MODULES];
   }
   const validSet = new Set<ScanModuleId>(ALL_SCAN_MODULES);
   const filtered = Array.from(new Set(modules.filter((m) => validSet.has(m))));
-  return filtered.length > 0 ? filtered : [...PASSIVE_SCAN_MODULES];
+  return filtered.length > 0 ? filtered : [...ALL_SCAN_MODULES];
 }
 
 export function resolveTargetDescriptor(rawInput: string): {
@@ -149,7 +154,22 @@ export async function runModularScanOrchestrator(
     });
   };
 
+  const emitLog = (
+    message: string,
+    level: ScanLogEvent['level'] = 'info',
+    moduleId: ScanLogEvent['moduleId'] = 'init',
+  ) => {
+    options.onLog?.({
+      id: `log-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+      ts: new Date().toISOString(),
+      level,
+      moduleId,
+      message,
+    });
+  };
+
   emitProgress('init', 'Initializing modular scan pipeline...', 8);
+  emitLog('Initializing modular scan pipeline', 'info', 'init');
 
   // 1. Direct CVE Deep Investigation
   if (desc.targetType === 'cve') {
@@ -345,9 +365,25 @@ export async function runModularScanOrchestrator(
     waybackProfile: null,
     webBreachSignals: [],
     waf: null,
+    portScan: null,
+    techStack: [],
     sensitivePaths: [],
     activeVulns: [],
+    log: (message, level = 'info', moduleId = 'init') => emitLog(message, level, moduleId),
   };
+
+  emitLog(
+    `Target classified as ${desc.targetType.toUpperCase()} · ${desc.normalizedTarget}`,
+    'info',
+    'init',
+  );
+  emitLog(
+    ownershipVerified
+      ? 'Ownership verified — active modules are authorized'
+      : 'Ownership not verified — active modules will be skipped by the ethical gate',
+    ownershipVerified ? 'success' : 'warn',
+    'init',
+  );
 
   const applicableSelected = selectedModules.filter((id) =>
     registry[id]?.supportsTargetType(desc.targetType),
@@ -371,15 +407,32 @@ export async function runModularScanOrchestrator(
             reason:
               'Blocked by ethical safeguard: Mandatory domain ownership verification required before running active probes.',
           });
+          emitLog(
+            `${plugin.label} skipped — domain ownership verification required`,
+            'warn',
+            id,
+          );
           return;
         }
 
         const startPct = 10 + (completedModules.length / runnableCount) * 80;
         emitProgress(id, `Scanning ${plugin.label}... ${Math.round(startPct)}%`, startPct);
+        emitLog(`Starting ${plugin.label}`, 'info', id);
+        const startedAt = Date.now();
         try {
           await plugin.run(ctx);
-        } catch {
+          emitLog(
+            `${plugin.label} finished in ${Date.now() - startedAt} ms`,
+            'success',
+            id,
+          );
+        } catch (err) {
           // Isolate plugin failure so one module never breaks the entire scan
+          emitLog(
+            `${plugin.label} failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+            'error',
+            id,
+          );
         }
         completedModules.push(id);
         const donePct = 10 + (completedModules.length / runnableCount) * 80;
@@ -390,7 +443,37 @@ export async function runModularScanOrchestrator(
 
   emitProgress('finalize', 'Mapping OWASP Top 10 & generating remediation snippets...', 95);
 
-  const allPorts = Array.from(new Set(ctx.attribution.flatMap((a) => a.openPorts ?? [])));
+  const detectedStack = detectTechStack({
+    serverHeader: ctx.httpAudit?.server,
+    headers: ctx.rawHttpHeaders,
+    html: ctx.htmlSample,
+    portScan: ctx.portScan,
+    waf: ctx.waf,
+  });
+  ctx.techStack = detectedStack;
+  if (detectedStack.length > 0) {
+    emitLog(
+      `Detected technology stack: ${detectedStack.map((item) => `${item.name} (${item.category})`).join(', ')}`,
+      'success',
+      'finalize',
+    );
+  } else {
+    emitLog('No reliable technology fingerprint could be established', 'info', 'finalize');
+  }
+
+  const { kept: contextualCves, excluded: excludedCves } = filterContextualCves(
+    ctx.cveDetails,
+    detectedStack,
+  );
+  ctx.cveDetails = contextualCves;
+  for (const excluded of excludedCves) {
+    emitLog(`Suppressed ${excluded.cveId}: ${excluded.reason}`, 'warn', 'finalize');
+  }
+
+  const portScanPorts = ctx.portScan?.openPorts.map((item) => item.port) ?? [];
+  const allPorts = Array.from(
+    new Set([...ctx.attribution.flatMap((a) => a.openPorts ?? []), ...portScanPorts]),
+  );
   const allVulns = Array.from(new Set(ctx.attribution.flatMap((a) => a.knownVulns ?? [])));
 
   const verdictInfo = computeTargetVerdict({
@@ -439,12 +522,19 @@ export async function runModularScanOrchestrator(
     attribution: ctx.attribution,
     cveDetails: ctx.cveDetails,
     waf: ctx.waf,
+    portScan: ctx.portScan,
+    techStack: ctx.techStack,
     sensitivePaths: ctx.sensitivePaths,
     activeVulns: ctx.activeVulns,
     executedModules: completedModules,
   });
 
   emitProgress('finalize', 'Security assessment complete', 100);
+  emitLog(
+    `Assessment complete · verdict ${finalVerdict} · ${riskCounts.Critical} critical, ${riskCounts.High} high, ${riskCounts.Medium} medium`,
+    finalVerdict === 'CRITICAL' || finalVerdict === 'HIGH' ? 'error' : 'success',
+    'finalize',
+  );
 
   return {
     query: desc.query,
@@ -471,6 +561,9 @@ export async function runModularScanOrchestrator(
     skippedActiveModules,
     ownershipVerified: ctx.ownershipVerified,
     waf: ctx.waf,
+    portScan: ctx.portScan,
+    techStack: ctx.techStack,
+    excludedCves,
     sensitivePaths: ctx.sensitivePaths,
     activeVulns: ctx.activeVulns,
     findings,

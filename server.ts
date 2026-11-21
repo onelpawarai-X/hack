@@ -1,11 +1,13 @@
 import 'dotenv/config';
 import express from 'express';
+import { createServer } from 'node:http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { domainVerificationStore } from './server/domainVerification.ts';
 import { defenseEngine, lookupRdapIpAbuse } from './server/defenseEngine.ts';
 import { analyzeImageBuffer } from './server/imageForensics.ts';
 import { createRateLimitMiddleware, SlidingWindowRateLimiter } from './server/rateLimiter.ts';
+import { attachRealtime, resolveScannerOrigin } from './server/realtime.ts';
 import { scanTargetOrWeb, traceAttackerIp } from './server/scanner.ts';
 import { threatMonitor } from './server/threatMonitor.ts';
 import { isValidIpv4 } from './server/threatRules.ts';
@@ -44,8 +46,25 @@ async function startServer() {
     res.json({
       status: 'ok',
       monitorActive: true,
+      realtime: true,
       timestamp: new Date().toISOString(),
     });
+  });
+
+  // Real public location of the scanning node (used to draw live attack lines on the map)
+  app.get('/api/self/location', async (_req, res) => {
+    try {
+      const origin = await resolveScannerOrigin();
+      if (!origin) {
+        return res.status(503).json({ error: 'Scanner origin could not be geolocated.' });
+      }
+      return res.json(origin);
+    } catch (err) {
+      return res.status(502).json({
+        error: 'Scanner origin lookup failed',
+        details: getErrorMessage(err),
+      });
+    }
   });
 
   // Live Radar & Continuous Global Threat Snapshot
@@ -135,9 +154,16 @@ async function startServer() {
     };
 
     try {
-      const report = await scanTargetOrWeb(rawTarget.trim(), rawModules, (evt) => {
-        writeLine(evt);
-      });
+      const report = await scanTargetOrWeb(
+        rawTarget.trim(),
+        rawModules,
+        (evt) => {
+          writeLine(evt);
+        },
+        (logEvent) => {
+          writeLine({ type: 'log', ...logEvent });
+        },
+      );
       writeLine({ type: 'result', report });
     } catch (err) {
       writeLine({ type: 'error', error: getErrorMessage(err) });
@@ -306,8 +332,11 @@ async function startServer() {
   }
 
   const PORT = Number(process.env.PORT) || 3000;
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = createServer(app);
+  attachRealtime(httpServer);
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`SentinelGlobe Cyber Threat Monitor listening on http://localhost:${PORT}`);
+    console.log('Realtime Socket.io scanning channel ready at /socket.io');
   });
 }
 

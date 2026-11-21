@@ -85,10 +85,21 @@ export const osintMetaModule: ScanModulePlugin = {
   supportsTargetType: (t) => t === 'ip' || t === 'domain' || t === 'url',
   async run(ctx) {
     if (ctx.targetType === 'ip') {
+      ctx.log(`Searching global breach dispatches for ${ctx.host}`, 'info', 'osintMeta');
       ctx.webBreachSignals = await searchWebBreachSignals(ctx.host);
+      ctx.log(
+        `Found ${ctx.webBreachSignals.length} web security dispatch(es)`,
+        ctx.webBreachSignals.length > 0 ? 'warn' : 'info',
+        'osintMeta',
+      );
       return;
     }
 
+    ctx.log(
+      `Querying certificate transparency, RDAP and Wayback for ${ctx.rootDomain}`,
+      'info',
+      'osintMeta',
+    );
     const [subdomains, rdapProfile, waybackProfile, webSignals] = await Promise.all([
       fetchDiscoveredSubdomains(ctx.rootDomain),
       fetchRdapDomainProfile(ctx.rootDomain),
@@ -100,5 +111,26 @@ export const osintMetaModule: ScanModulePlugin = {
     ctx.rdapProfile = rdapProfile;
     ctx.waybackProfile = waybackProfile;
     ctx.webBreachSignals = webSignals;
+
+    ctx.log(
+      `Certificate transparency returned ${subdomains.length} subdomain(s)`,
+      'info',
+      'osintMeta',
+    );
+    if (rdapProfile?.registrar) {
+      ctx.log(`RDAP registrar: ${rdapProfile.registrar}`, 'info', 'osintMeta');
+    }
+    if (waybackProfile?.firstSnapshot) {
+      ctx.log(
+        `Wayback archive first snapshot: ${waybackProfile.firstSnapshot}`,
+        'info',
+        'osintMeta',
+      );
+    }
+    ctx.log(
+      `Found ${webSignals.length} web breach/attack dispatch(es)`,
+      webSignals.length > 0 ? 'warn' : 'info',
+      'osintMeta',
+    );
   },
 };

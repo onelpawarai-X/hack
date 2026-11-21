@@ -3,14 +3,17 @@ import type {
   BgpRouteProfile,
   CveDetailRecord,
   CyberIncident,
+  PortScanReport,
   RdapDomainProfile,
   ScanModuleId,
   SensitivePathFinding,
   TargetScanResult,
+  TechFingerprint,
   ThreatNode,
   WafDetectionResult,
   WaybackArchiveProfile,
 } from '../../src/types/cyber.ts';
+import type { ScanLogLevel } from '../../src/types/realtime.ts';
 
 export const PASSIVE_SCAN_MODULES: ScanModuleId[] = [
   'threatIntel',
@@ -23,6 +26,7 @@ export const PASSIVE_SCAN_MODULES: ScanModuleId[] = [
 ];
 
 export const ACTIVE_SCAN_MODULES: ScanModuleId[] = [
+  'portScan',
   'sensitiveFiles',
   'activeVulns',
 ];
@@ -57,8 +61,15 @@ export interface ScanExecutionContext {
   waybackProfile: WaybackArchiveProfile | null;
   webBreachSignals: CyberIncident[];
   waf: WafDetectionResult | null;
+  portScan: PortScanReport | null;
+  techStack: TechFingerprint[];
   sensitivePaths: SensitivePathFinding[];
   activeVulns: ActiveVulnFinding[];
+  log: (
+    message: string,
+    level?: ScanLogLevel,
+    moduleId?: ScanModuleId | 'init' | 'finalize',
+  ) => void;
 }
 
 export interface ScanModulePlugin {

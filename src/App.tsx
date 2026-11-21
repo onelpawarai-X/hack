@@ -1,11 +1,19 @@
 import { RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AttackerInspector } from './components/AttackerInspector';
+import { DomainVerificationPanel } from './components/DomainVerificationPanel';
+import { EthicalBanner } from './components/EthicalBanner';
 import { ImageForensicsPanel } from './components/ImageForensicsPanel';
+import { LiveScanTerminal } from './components/LiveScanTerminal';
+import { LiveThreatMap } from './components/LiveThreatMap';
 import { RadarCanvas } from './components/RadarCanvas';
+import { ScanProgressBar } from './components/ScanProgressBar';
+import { SeverityCharts } from './components/SeverityCharts';
 import { TargetScannerPanel } from './components/TargetScannerPanel';
 import { ThreatFeedsMatrix, type MatrixTab } from './components/ThreatFeedsMatrix';
+import { useScanSocket } from './hooks/useScanSocket';
 import { getCyberTranslations } from './i18n/cyberTranslations';
+import { getLabTranslations } from './i18n/labTranslations';
 import type {
   DefenseStateSnapshot,
   Language,
@@ -14,6 +22,7 @@ import type {
   TargetScanResult,
   ThreatNode,
 } from './types/cyber';
+import type { ScanGeoPayload, ScanLogEvent, ScanProgressPayload } from './types/realtime';
 import { formatUtcTimestamp } from './utils/formatters';
 
 const POLL_SECONDS = 30;
@@ -44,6 +53,15 @@ export default function App() {
   const [scanResult, setScanResult] = useState<TargetScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+
+  const lab = useMemo(() => getLabTranslations(lang), [lang]);
+  const scanSocket = useScanSocket();
+  const [fallbackLogs, setFallbackLogs] = useState<ScanLogEvent[]>([]);
+  const [fallbackProgress, setFallbackProgress] = useState<ScanProgressPayload | null>(null);
+  const [activeTransport, setActiveTransport] = useState<'socket' | 'rest' | null>(null);
+  const isScanning = scanSocket.scanning || scanning;
+  const terminalLogs = activeTransport === 'rest' ? fallbackLogs : scanSocket.logs;
+  const activeProgress = activeTransport === 'rest' ? fallbackProgress : scanSocket.progress;
 
   const [defenseState, setDefenseState] = useState<DefenseStateSnapshot>(EMPTY_DEFENSE_STATE);
   const [activatingShield, setActivatingShield] = useState(false);
@@ -123,6 +141,61 @@ export default function App() {
     return () => clearInterval(timer);
   }, [fetchRadar, fetchDefenseState]);
 
+  const applyScanResult = useCallback((report: TargetScanResult) => {
+    setScanResult(report);
+    if (report.attribution.length > 0) {
+      setPinnedNode(report.attribution[0]);
+      setSelectedNode(report.attribution[0]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (scanSocket.result) {
+      applyScanResult(scanSocket.result);
+      setScanError(null);
+    }
+  }, [scanSocket.result, applyScanResult]);
+
+  useEffect(() => {
+    if (scanSocket.error) setScanError(scanSocket.error);
+  }, [scanSocket.error]);
+
+  const effectiveGeo: ScanGeoPayload | null = useMemo(() => {
+    if (scanSocket.geo) return scanSocket.geo;
+    if (!scanResult) return null;
+    const points = scanResult.attribution
+      .filter(
+        (node) =>
+          Number.isFinite(node.lat) &&
+          Number.isFinite(node.lon) &&
+          !(node.lat === 0 && node.lon === 0),
+      )
+      .map((node) => ({
+        ip: node.ip,
+        label: `${node.city || 'Unknown'}, ${node.country || 'Unknown'}`,
+        lat: node.lat,
+        lon: node.lon,
+        severity: node.severity,
+        role: 'target' as const,
+        city: node.city,
+        country: node.country,
+      }));
+    if (points.length === 0) return null;
+    return {
+      target: scanResult.normalizedTarget,
+      points,
+      scanner: scanSocket.scannerOrigin
+        ? {
+            ip: scanSocket.scannerOrigin.ip,
+            lat: scanSocket.scannerOrigin.lat,
+            lon: scanSocket.scannerOrigin.lon,
+            city: scanSocket.scannerOrigin.city,
+            country: scanSocket.scannerOrigin.country,
+          }
+        : null,
+    };
+  }, [scanSocket.geo, scanSocket.scannerOrigin, scanResult]);
+
   const handleSelectNode = async (node: ThreatNode) => {
     setSelectedNode(node);
     if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(node.ip) && (!node.physicalAddress || !node.abuseEmails)) {
@@ -159,30 +232,61 @@ export default function App() {
   const handleScanTarget = async (target: string, scrollToScanner = true) => {
     const clean = target.trim();
     if (clean.length < 2) return;
-    setScanning(true);
     setScanError(null);
     setShieldNotice(null);
+    setFallbackLogs([]);
+    setFallbackProgress(null);
     if (scrollToScanner) {
       scannerSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    // Preferred path: realtime Socket.io stream with live progress + terminal logs
+    if (scanSocket.connected) {
+      setActiveTransport('socket');
+      scanSocket.startScan(clean);
+      return;
+    }
+
+    // Fallback path: NDJSON streaming endpoint keeps the live terminal working without websockets
+    setActiveTransport('rest');
+    setScanning(true);
     try {
-      const res = await fetch('/api/scan', {
+      const res = await fetch('/api/scan/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target: clean }),
       });
-      const data = (await res.json()) as TargetScanResult & {
-        error?: string;
-        details?: string;
-      };
-      if (!res.ok) {
-        throw new Error(data.details || data.error || 'Target scan failed');
+      if (!res.ok || !res.body) {
+        const payload = (await res.json().catch(() => ({}))) as { error?: string; details?: string };
+        throw new Error(payload.details || payload.error || `Scan failed (HTTP ${res.status})`);
       }
-      setScanResult(data);
-      if (data.attribution.length > 0) {
-        setPinnedNode(data.attribution[0]);
-        setSelectedNode(data.attribution[0]);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as
+            | ({ type: 'progress' } & ScanProgressPayload)
+            | ({ type: 'log' } & ScanLogEvent)
+            | { type: 'result'; report: TargetScanResult }
+            | { type: 'error'; error: string };
+          if (event.type === 'log') {
+            setFallbackLogs((prev) => [...prev.slice(-499), event]);
+          } else if (event.type === 'progress') {
+            setFallbackProgress(event);
+          } else if (event.type === 'result') {
+            applyScanResult(event.report);
+          } else if (event.type === 'error') {
+            throw new Error(event.error);
+          }
+        }
       }
     } catch (err) {
       setScanError(err instanceof Error ? err.message : 'Scan failed');
@@ -411,6 +515,21 @@ export default function App() {
           </div>
         )}
 
+        <EthicalBanner t={lab} />
+
+        <LiveThreatMap
+          t={lab}
+          nodes={radar?.threatNodes ?? []}
+          scanResult={scanResult}
+          scanGeo={effectiveGeo}
+          scannerOrigin={scanSocket.scannerOrigin}
+          selectedNodeId={selectedNode?.id ?? null}
+          blockedIps={blockedIpStrings}
+          scanning={isScanning}
+          loading={loadingRadar}
+          onSelectNode={(node) => void handleSelectNode(node)}
+        />
+
         {/* Hero Split: Real 3D Globe & Tactical Cyber Threat Radar + Attacker Inspector */}
         <div ref={radarSectionRef} className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
           <div className="xl:col-span-8 flex flex-col">
@@ -467,12 +586,42 @@ export default function App() {
         </section>
 
         {/* Deep Target, IP Map Plotting & Website Defense Shield Scanner */}
-        <div ref={scannerSectionRef}>
+        <div ref={scannerSectionRef} className="space-y-6">
+          {/* Realtime Scan Lab: Progress + Live Terminal + Ownership Verification */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            <div className="xl:col-span-2 space-y-6">
+              <ScanProgressBar t={lab} progress={activeProgress} scanning={isScanning} />
+              <LiveScanTerminal
+                t={lab}
+                logs={terminalLogs}
+                connected={scanSocket.connected}
+                scanning={isScanning}
+                onClear={() => {
+                  if (activeTransport === 'rest') {
+                    setFallbackLogs([]);
+                  } else {
+                    scanSocket.clearLogs();
+                  }
+                }}
+              />
+            </div>
+            <div className="xl:col-span-1">
+              <DomainVerificationPanel
+                t={lab}
+                defaultDomain={scanResult?.normalizedTarget}
+                onVerified={(domain) => {
+                  setShieldNotice(`Ownership verified for ${domain}. Active modules unlocked.`);
+                  void handleScanTarget(domain, false);
+                }}
+              />
+            </div>
+          </div>
+
           <TargetScannerPanel
             t={t}
             lang={lang}
             scanResult={scanResult}
-            scanning={scanning}
+            scanning={isScanning}
             scanError={scanError}
             activatingShield={activatingShield}
             shieldNotice={shieldNotice}
@@ -484,6 +633,14 @@ export default function App() {
             sampleAttackerIp={radar?.threatNodes[0]?.ip}
           />
         </div>
+
+        <SeverityCharts
+          t={lab}
+          riskCounts={scanResult?.riskCounts ?? null}
+          portScan={scanResult?.portScan ?? null}
+          techStack={scanResult?.techStack ?? null}
+          excludedCves={scanResult?.excludedCves ?? null}
+        />
 
         {/* Ultra-Deep Picture Forensics, Device, Location & Embedded IP Lab */}
         <ImageForensicsPanel

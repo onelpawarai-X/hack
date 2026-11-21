@@ -123,6 +123,7 @@ export const activeVulnsModule: ScanModulePlugin = {
 
     const findings: ActiveVulnFinding[] = [];
     const hasCsp = Boolean(ctx.rawHttpHeaders['content-security-policy']);
+    ctx.log('Running authorized non-destructive active checks (CSRF, XSS canary, SQL error leak)', 'info', 'activeVulns');
 
     // 1. HTML Form CSRF Token Absence Check
     if (ctx.htmlSample) {
@@ -191,5 +192,17 @@ export const activeVulnsModule: ScanModulePlugin = {
     }
 
     ctx.activeVulns = findings;
+    for (const finding of findings) {
+      ctx.log(
+        `${finding.category} · ${finding.riskLevel} · ${finding.endpoint}`,
+        finding.riskLevel === 'High' || finding.riskLevel === 'Critical' ? 'error' : 'warn',
+        'activeVulns',
+      );
+    }
+    ctx.log(
+      `Active verification complete · ${findings.length} finding(s)`,
+      findings.length > 0 ? 'warn' : 'success',
+      'activeVulns',
+    );
   },
 };

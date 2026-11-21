@@ -7,6 +7,7 @@ export const dnsModule: ScanModulePlugin = {
   isActive: false,
   supportsTargetType: (t) => t === 'domain' || t === 'url',
   async run(ctx) {
+    ctx.log(`Resolving DNS records for ${ctx.host} (A, AAAA, MX, NS, TXT, DMARC, CAA)`, 'info', 'dns');
     const [aRecs, aaaaRecs, mxRecs, nsRecs, txtRecs, dmarcRecs, caaRecs] =
       await Promise.all([
         resolveDnsRecord(ctx.host, 'A'),
@@ -30,5 +31,16 @@ export const dnsModule: ScanModulePlugin = {
       dmarcRecord: emailSec.dmarcRecord,
       emailSecurityStatus: emailSec.emailSecurityStatus,
     };
+
+    ctx.log(
+      `DNS resolved · ${aRecs.length} A, ${aaaaRecs.length} AAAA, ${nsRecs.length} NS record(s)`,
+      aRecs.length > 0 ? 'success' : 'warn',
+      'dns',
+    );
+    ctx.log(
+      `Email authentication status: ${emailSec.emailSecurityStatus.toUpperCase()}`,
+      emailSec.emailSecurityStatus === 'protected' ? 'success' : 'warn',
+      'dns',
+    );
   },
 };

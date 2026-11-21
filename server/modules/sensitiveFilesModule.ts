@@ -143,6 +143,11 @@ export const sensitiveFilesModule: ScanModulePlugin = {
 
     const baseOrigin = `https://${ctx.host}`;
     await assertSafePublicUrl(baseOrigin);
+    ctx.log(
+      `Authorized sensitive-path discovery across ${SENSITIVE_PATH_SPECS.length} endpoints`,
+      'info',
+      'sensitiveFiles',
+    );
 
     const results: SensitivePathFinding[] = [];
     for (const spec of SENSITIVE_PATH_SPECS) {
@@ -185,5 +190,18 @@ export const sensitiveFilesModule: ScanModulePlugin = {
     }
 
     ctx.sensitivePaths = results;
+    const exposed = results.filter((item) => item.exposed);
+    for (const item of exposed) {
+      ctx.log(
+        `CONFIRMED exposed artifact ${item.path} · HTTP ${item.status} · ${item.riskLevel}`,
+        item.riskLevel === 'Critical' || item.riskLevel === 'High' ? 'error' : 'warn',
+        'sensitiveFiles',
+      );
+    }
+    ctx.log(
+      `Sensitive-path sweep complete · ${exposed.length} confirmed exposure(s)`,
+      exposed.length > 0 ? 'error' : 'success',
+      'sensitiveFiles',
+    );
   },
 };

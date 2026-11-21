@@ -1,11 +1,13 @@
 import type {
   ActiveVulnFinding,
   OwaspCategory,
+  PortScanReport,
   RemediationSnippets,
   RiskLevel,
   SecurityFinding,
   SensitivePathFinding,
   TargetScanResult,
+  TechFingerprint,
   WafDetectionResult,
 } from '../src/types/cyber.ts';
 
@@ -74,6 +76,8 @@ export function buildCategorizedFindings(input: {
   attribution: TargetScanResult['attribution'];
   cveDetails?: TargetScanResult['cveDetails'];
   waf?: WafDetectionResult | null;
+  portScan?: PortScanReport | null;
+  techStack?: TechFingerprint[];
   sensitivePaths?: SensitivePathFinding[];
   activeVulns?: ActiveVulnFinding[];
   executedModules: string[];
@@ -136,8 +140,9 @@ export function buildCategorizedFindings(input: {
     });
   }
 
+  const activePorts = input.portScan?.openPorts.map((item) => item.port) ?? [];
   const allPorts = Array.from(
-    new Set(input.attribution.flatMap((a) => a.openPorts ?? [])),
+    new Set([...input.attribution.flatMap((a) => a.openPorts ?? []), ...activePorts]),
   );
   const riskyPorts = allPorts.filter((p) =>
     [21, 22, 23, 25, 445, 1433, 3306, 3389, 5432, 6379, 27017].includes(p),
@@ -161,6 +166,55 @@ export function buildCategorizedFindings(input: {
         apache: `# Restrict sensitive endpoints via Require ip <TRUSTED_VPN_CIDR>`,
         cloudflare: `# Enable Cloudflare Spectrum / Tunnel so origin firewall drops all inbound except Cloudflare IPs`,
       },
+    });
+  }
+
+  // 2b. Real TCP port scan results
+  if (input.portScan && input.portScan.openPorts.length > 0) {
+    const services = input.portScan.openPorts
+      .map((item) => `${item.port}/${item.service}`)
+      .join(', ');
+    findings.push({
+      id: 'tcp-port-scan',
+      moduleId: 'portScan',
+      title: `TCP Port Scan Discovered ${input.portScan.openPorts.length} Open Service(s)`,
+      description:
+        'A live TCP connect scan from the SentinelGlobe scanner reached the following services on the public internet.',
+      riskLevel: input.portScan.openPorts.some(
+        (item) => item.riskLevel === 'Critical' || item.riskLevel === 'High',
+      )
+        ? 'High'
+        : 'Info',
+      owaspCategory: 'A05:2021 - Security Misconfiguration',
+      owaspId: 'A05:2021',
+      cwe: 'CWE-1327',
+      evidence: services,
+      remediation:
+        'Close every service that does not need public exposure and restrict management ports to VPN, bastion or zero-trust access.',
+      snippets: {
+        nginx: `# Only proxy required HTTP(S) services\nlocation / {\n  proxy_pass http://127.0.0.1:8080;\n}`,
+        apache: `# Bind internal services to loopback only\nListen 127.0.0.1:8080`,
+        cloudflare: `# Put origin behind Cloudflare Tunnel and deny direct inbound traffic at the firewall.`,
+      },
+    });
+  }
+
+  // 2c. Observed technology stack
+  if (input.techStack && input.techStack.length > 0) {
+    findings.push({
+      id: 'tech-stack-fingerprint',
+      moduleId: 'headers',
+      title: `Technology Stack Fingerprint (${input.techStack.length} component(s))`,
+      description:
+        'Observed server, framework, platform and CDN components. CVE matching is scoped to this stack to avoid cross-product false positives.',
+      riskLevel: 'Info',
+      owaspCategory: 'A05:2021 - Security Misconfiguration',
+      owaspId: 'A05:2021',
+      evidence: input.techStack
+        .map((item) => `${item.name} [${item.category}, ${item.confidence}]`)
+        .join('; '),
+      remediation:
+        'Keep each detected component patched and remove version banners from public responses.',
     });
   }
 
