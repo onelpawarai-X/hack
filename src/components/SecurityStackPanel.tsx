@@ -111,6 +111,11 @@ function ToolCard({
           <span className="text-slate-600">ingest</span> /api/security-stack/ingest/{tool.id}
         </div>
         {status?.detail && <div className="text-slate-500 leading-relaxed">{status.detail}</div>}
+        {state === 'error' && status?.logTail && status.logTail.length > 0 && (
+          <div className="truncate text-red-300/80" title={status.logTail.join('\n')}>
+            {status.logTail[status.logTail.length - 1]}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
@@ -186,6 +191,7 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
   const [stackAction, setStackAction] = useState<string | null>(null);
   const [dockerHostInput, setDockerHostInput] = useState('');
   const [savingHost, setSavingHost] = useState(false);
+  const [showRemoteConfig, setShowRemoteConfig] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -400,9 +406,7 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
             {snapshot?.docker.available
               ? `${snapshot.docker.version ?? 'ready'}${snapshot.docker.composeAvailable ? ' + Compose' : ''}`
               : snapshot?.docker.cliInstalled
-                ? snapshot.docker.serverlessSandbox && !snapshot.docker.remoteHost
-                  ? `CLI ready${snapshot.docker.composeAvailable ? ' + Compose' : ''}`
-                  : 'daemon stopped'
+                ? 'engine stopped'
                 : 'not installed'}
           </span>
           <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/5 px-2 py-0.5 text-[9px] font-semibold text-cyan-300">
@@ -411,16 +415,8 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
           <button
             type="button"
             onClick={() => void runStackAction('start-docker')}
-            disabled={
-              stackAction !== null ||
-              Boolean(snapshot?.docker.available) ||
-              Boolean(snapshot?.docker.serverlessSandbox && !snapshot?.docker.remoteHost)
-            }
-            title={
-              snapshot?.docker.serverlessSandbox && !snapshot?.docker.remoteHost
-                ? L(lang, 'Cloud Run gVisor লোকাল dockerd বন্ধ রাখে — রিমোট DOCKER_HOST যুক্ত করুন।', 'Cloud Run gVisor blocks local dockerd — connect a remote DOCKER_HOST.')
-                : L(lang, 'স্বয়ংক্রিয়ভাবে চলে; এটি শুধু ম্যানুয়াল ফলব্যাক।', 'Runs automatically; this is only a manual fallback.')
-            }
+            disabled={stackAction !== null || Boolean(snapshot?.docker.available)}
+            title={L(lang, 'ভিতরের Docker Engine স্বয়ংক্রিয়ভাবে চালু হয়; এটি ম্যানুয়াল বাটন।', 'Starts the built-in local Docker Engine inside the container.')}
             className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
           >
             {stackAction === 'start-docker' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
@@ -472,55 +468,62 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
 
       {snapshot && !snapshot.docker.available && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100 space-y-2">
-          <div>
-            <div className="font-semibold">
-              {snapshot.docker.cliInstalled && snapshot.docker.serverlessSandbox && !snapshot.docker.remoteHost
-                ? L(
-                    lang,
-                    'Docker CLI ও Compose v2 ইনস্টল আছে — Cloud Run স্যান্ডবক্সে রিমোট ইঞ্জিন সংযুক্ত করুন',
-                    'Docker CLI + Compose v2 installed — connect a remote Docker Engine from Cloud Run',
-                  )
-                : L(
-                    lang,
-                    'Docker ইঞ্জিন চালু নেই — কন্টেইনার টুলগুলো এখনো চলেনি',
-                    'Docker Engine is not reachable — container tools are not running',
-                  )}
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="font-semibold">
+                {L(
+                  lang,
+                  'Docker ইঞ্জিন চালু হচ্ছে / থামানো আছে',
+                  'Docker Engine is starting or stopped',
+                )}
+              </div>
+              <div className="mt-0.5 text-amber-200/85">{snapshot.docker.detail}</div>
+              {snapshot.docker.hint && (
+                <div className="mt-1 font-mono text-[10px] text-amber-200/70">{snapshot.docker.hint}</div>
+              )}
             </div>
-            <div className="mt-0.5 text-amber-200/85">{snapshot.docker.detail}</div>
-            {snapshot.docker.hint && (
-              <div className="mt-1 font-mono text-[10px] text-amber-200/70">{snapshot.docker.hint}</div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-500/20">
-            <span className="text-[10px] font-mono text-amber-200/80">DOCKER_HOST</span>
-            <input
-              type="text"
-              value={dockerHostInput}
-              onChange={(event) => setDockerHostInput(event.target.value)}
-              placeholder="tcp://your-vps-ip:2376"
-              className="min-w-[220px] flex-1 rounded-md border border-amber-500/30 bg-[#05080E] px-2.5 py-1 font-mono text-[11px] text-slate-100 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none"
-            />
             <button
               type="button"
-              disabled={savingHost || !dockerHostInput.trim()}
-              onClick={() => void saveRemoteDockerHost(dockerHostInput)}
-              className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
+              onClick={() => setShowRemoteConfig((prev) => !prev)}
+              className="rounded border border-amber-500/30 bg-black/20 px-2 py-0.5 text-[10px] text-amber-200/80 hover:text-amber-100"
             >
-              {savingHost && <Loader2 className="h-3 w-3 animate-spin" />}
-              {L(lang, 'রিমোট ইঞ্জিন যুক্ত', 'Connect Remote')}
+              {showRemoteConfig
+                ? L(lang, 'বন্ধ করুন', 'Hide remote')
+                : L(lang, 'ঐচ্ছিক রিমোট ইঞ্জিন', 'Optional remote host')}
             </button>
-            {snapshot.docker.remoteHost && (
+          </div>
+
+          {(showRemoteConfig || snapshot.docker.remoteHost) && (
+            <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-amber-500/20">
+              <span className="text-[10px] font-mono text-amber-200/80">DOCKER_HOST</span>
+              <input
+                type="text"
+                value={dockerHostInput}
+                onChange={(event) => setDockerHostInput(event.target.value)}
+                placeholder="tcp://your-vps-ip:2376"
+                className="min-w-[220px] flex-1 rounded-md border border-amber-500/30 bg-[#05080E] px-2.5 py-1 font-mono text-[11px] text-slate-100 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none"
+              />
               <button
                 type="button"
-                disabled={savingHost}
-                onClick={() => void saveRemoteDockerHost('')}
-                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-300 hover:border-slate-500 disabled:opacity-50"
+                disabled={savingHost || !dockerHostInput.trim()}
+                onClick={() => void saveRemoteDockerHost(dockerHostInput)}
+                className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
               >
-                {L(lang, 'ক্লিয়ার', 'Clear')}
+                {savingHost && <Loader2 className="h-3 w-3 animate-spin" />}
+                {L(lang, 'রিমোট যুক্ত', 'Connect Remote')}
               </button>
-            )}
-          </div>
+              {snapshot.docker.remoteHost && (
+                <button
+                  type="button"
+                  disabled={savingHost}
+                  onClick={() => void saveRemoteDockerHost('')}
+                  className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-300 hover:border-slate-500 disabled:opacity-50"
+                >
+                  {L(lang, 'লোকাল ব্যবহার', 'Use Built-in Local')}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 

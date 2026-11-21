@@ -6,11 +6,16 @@ import { test } from 'node:test';
 import { SECURITY_TOOLS } from './catalog.ts';
 import { buildSecurityToolConfig } from './configs.ts';
 import {
+  buildSandboxComposeOverrideYaml,
+  detectDefaultCaptureInterface,
   detectServerlessSandbox,
+  findCrunBinary,
   findDockerBinary,
+  findDockerdBinary,
   getDockerExecEnv,
   validateDockerHost,
 } from './dockerEnv.ts';
+import { resolveAutoStartTargets } from './supervisor.ts';
 import { ingestNormalizedEvents } from './ingest.ts';
 import {
   parseBeelzebubEvent,
@@ -306,4 +311,54 @@ test('findDockerBinary locates custom executable binary and getDockerExecEnv add
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('buildSandboxComposeOverrideYaml resets ports to host networking for sandbox mode', () => {
+  const yaml = buildSandboxComposeOverrideYaml();
+  assert.ok(yaml.includes('cowrie:'));
+  assert.ok(yaml.includes('opencanary:'));
+  assert.ok(yaml.includes('network_mode: host'));
+  assert.ok(yaml.includes('ports: !reset []'));
+});
+
+test('findDockerdBinary and findCrunBinary resolve bundled binaries', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sentinel-daemon-bin-'));
+  try {
+    const fakeDaemon = path.join(tmpDir, 'dockerd');
+    const fakeCrun = path.join(tmpDir, 'crun');
+    fs.writeFileSync(fakeDaemon, '#!/bin/sh\necho dockerd\n', { mode: 0o755 });
+    fs.writeFileSync(fakeCrun, '#!/bin/sh\necho crun\n', { mode: 0o755 });
+    assert.equal(findDockerdBinary([tmpDir]), fakeDaemon);
+    assert.equal(findCrunBinary([tmpDir]), fakeCrun);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('detectDefaultCaptureInterface skips loopback and picks active ethernet interface', () => {
+  const tmpNet = fs.mkdtempSync(path.join(os.tmpdir(), 'sentinel-net-'));
+  try {
+    fs.mkdirSync(path.join(tmpNet, 'lo'));
+    fs.mkdirSync(path.join(tmpNet, 'eth1'));
+    fs.mkdirSync(path.join(tmpNet, 'eth2'));
+    assert.equal(detectDefaultCaptureInterface(tmpNet), 'eth2');
+
+    fs.mkdirSync(path.join(tmpNet, 'eth0'));
+    assert.equal(detectDefaultCaptureInterface(tmpNet), 'eth0');
+  } finally {
+    fs.rmSync(tmpNet, { recursive: true, force: true });
+  }
+});
+
+test('resolveAutoStartTargets avoids heavy multi-GB pulls in serverless sandboxes unless overridden', () => {
+  const sandboxTargets = resolveAutoStartTargets({ isServerlessSandbox: true, envTools: undefined });
+  assert.deepEqual(sandboxTargets, ['beelzebub']);
+
+  const vpsTargets = resolveAutoStartTargets({ isServerlessSandbox: false, envTools: undefined });
+  assert.ok(vpsTargets.includes('suricata'));
+  assert.ok(vpsTargets.includes('wazuh'));
+  assert.ok(!vpsTargets.includes('security-onion'));
+
+  const explicit = resolveAutoStartTargets({ isServerlessSandbox: true, envTools: 'beelzebub,opencanary' });
+  assert.deepEqual(explicit, ['beelzebub', 'opencanary']);
 });

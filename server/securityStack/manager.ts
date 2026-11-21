@@ -13,10 +13,16 @@ import { getSecurityStackPaths, writeSecurityToolConfigs } from './configs.ts';
 
 import {
   detectServerlessSandbox,
+  ensureBundledDockerCli,
+  ensureSandboxComposeOverride,
+  findCrunBinary,
   findDockerBinary,
+  findDockerdBinary,
   getConfiguredDockerHost,
   getDockerExecEnv,
+  prepareSandboxCgroups,
   probeComposeAvailable,
+  resolveBundledDaemonRuntimePaths,
 } from './dockerEnv.ts';
 
 const execFileAsync = promisify(execFile);
@@ -138,6 +144,7 @@ async function dockerAvailable(): Promise<DockerAvailability> {
   }
 
   if (sandbox.isServerlessSandbox && !remoteHost) {
+    const daemonReadyBinary = Boolean(findDockerdBinary());
     return {
       ok: false,
       cliInstalled: true,
@@ -147,8 +154,12 @@ async function dockerAvailable(): Promise<DockerAvailability> {
       remoteHost: null,
       serverlessSandbox: true,
       nativeFallbackActive: true,
-      detail: `Docker CLI${composeAvailable ? ' + Compose v2' : ''} is installed at ${cliPath}. Local dockerd cannot run inside Cloud Run's gVisor sandbox; built-in Node sensors, honeypot decoys, and log ingest remain active.`,
-      hint: 'Connect a remote Docker Engine (e.g. tcp://your-vps:2376) above to launch Suricata/Zeek/Cowrie containers remotely, or deploy SentinelGlobe on a Linux VPS.',
+      detail: daemonReadyBinary
+        ? `Bundled Docker CLI + Engine (${cliPath}) is ready; local dockerd daemon is stopped or starting.`
+        : `Docker CLI is installed at ${cliPath}; press "Setup Docker" to bundle local dockerd Engine.`,
+      hint: daemonReadyBinary
+        ? 'Press "Start Docker" (auto-starts in a few seconds).'
+        : 'Press "Setup Docker" to download bundled dockerd + crun runtime.',
     };
   }
 
@@ -234,27 +245,22 @@ export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string
   if (current.ok) {
     return { ok: true, detail: `Docker ${current.version ?? ''} is already running.`.trim() };
   }
-  if (!current.cliInstalled) {
-    return { ok: false, detail: current.detail };
-  }
-  if (current.serverlessSandbox && !current.remoteHost) {
-    return {
-      ok: false,
-      detail:
-        'Cloud Run gVisor blocks nested local dockerd daemons. Docker CLI is installed — connect a remote DOCKER_HOST or deploy on a Linux VPS.',
-    };
-  }
   if (current.remoteHost) {
     return {
       ok: false,
-      detail: `Cannot start remote Docker daemon at ${current.remoteHost} locally. Start dockerd on that remote host.`,
+      detail: `Remote DOCKER_HOST (${current.remoteHost}) is unreachable. Clear remote host to use the built-in local Docker Engine.`,
     };
   }
 
+  // Ensure full bundled Docker runtime (docker + dockerd + containerd + crun + compose)
+  if (!findDockerBinary() || !findDockerdBinary()) {
+    await ensureBundledDockerCli().catch(() => undefined);
+  }
+
+  const sandbox = detectServerlessSandbox();
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const hasSudo = !isRoot && (await hasBinary('sudo'));
-  const attempts: string[] = [];
-  const run = async (command: string, args: string[], timeout = 60_000) => {
+  const run = async (command: string, args: string[], timeout = 30_000) => {
     try {
       const { stdout, stderr } = await execFileAsync(command, args, { timeout });
       return `${stdout}\n${stderr}`.trim();
@@ -263,49 +269,102 @@ export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string
     }
   };
 
-  for (const [command, args] of [
-    ['systemctl', ['start', 'docker']],
-    ['service', ['docker', 'start']],
-  ] as const) {
-    if (!(await hasBinary(command))) continue;
-    const output = isRoot
-      ? await run(command, [...args])
-      : hasSudo
-        ? await run('sudo', ['-n', command, ...args])
-        : 'no sudo available';
-    attempts.push(`${command} ${args.join(' ')}: ${output || 'ok'}`);
-    const after = await dockerAvailable();
-    if (after.ok) {
-      return { ok: true, detail: `Docker daemon started with ${command} ${args.join(' ')}.` };
-    }
-  }
-
-  if ((isRoot || hasSudo) && (await hasBinary('dockerd'))) {
-    const logPath = path.resolve(paths.logs, 'dockerd.log');
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    const fd = fs.openSync(logPath, 'a');
-    try {
-      const child = spawn(isRoot ? 'dockerd' : 'sudo', isRoot ? [] : ['-n', 'dockerd'], {
-        detached: true,
-        stdio: ['ignore', fd, fd],
-      });
-      child.unref();
-    } finally {
-      fs.closeSync(fd);
-    }
-    attempts.push(`dockerd: started in background, log at ${logPath}`);
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await sleep(1000);
+  if (!sandbox.isServerlessSandbox) {
+    for (const [command, args] of [
+      ['systemctl', ['start', 'docker']],
+      ['service', ['docker', 'start']],
+    ] as const) {
+      if (!(await hasBinary(command))) continue;
+      if (isRoot) await run(command, [...args]);
+      else if (hasSudo) await run('sudo', ['-n', command, ...args]);
       const after = await dockerAvailable();
       if (after.ok) {
-        return { ok: true, detail: `Docker daemon started. Log: ${logPath}` };
+        return { ok: true, detail: `Docker daemon started with ${command} ${args.join(' ')}.` };
       }
     }
   }
 
+  const dockerdBin = findDockerdBinary();
+  if (!dockerdBin) {
+    return {
+      ok: false,
+      detail: 'Bundled dockerd binary is missing. Click "Setup Docker" to download the engine.',
+    };
+  }
+
+  if (!isRoot && !hasSudo) {
+    return {
+      ok: false,
+      detail: 'Starting local dockerd requires root or passwordless sudo privileges.',
+    };
+  }
+
+  if (sandbox.isServerlessSandbox) {
+    await prepareSandboxCgroups();
+  }
+
+  const rt = resolveBundledDaemonRuntimePaths();
+  fs.mkdirSync(rt.dataRoot, { recursive: true });
+  fs.mkdirSync(rt.execRoot, { recursive: true });
+  fs.mkdirSync(path.dirname(rt.socketPath), { recursive: true });
+  fs.mkdirSync(path.dirname(rt.logPath), { recursive: true });
+  fs.rmSync(rt.pidFile, { force: true });
+  fs.rmSync(rt.socketPath, { force: true });
+
+  const hasIptables = await hasBinary('iptables');
+  const crunBin = findCrunBinary();
+  const useSandboxFlags = sandbox.isServerlessSandbox || !hasIptables;
+  const daemonArgs = [
+    `--data-root=${rt.dataRoot}`,
+    `--exec-root=${rt.execRoot}`,
+    `--pidfile=${rt.pidFile}`,
+    `--host=unix://${rt.socketPath}`,
+    ...(useSandboxFlags
+      ? [
+          '--storage-driver=vfs',
+          '--iptables=false',
+          '--ip-masq=false',
+          '--ip6tables=false',
+          '--bridge=none',
+          ...(crunBin ? [`--add-runtime=crun=${crunBin}`, '--default-runtime=crun'] : []),
+        ]
+      : []),
+  ];
+
+  const fd = fs.openSync(rt.logPath, 'a');
+  try {
+    const child = spawn(isRoot ? dockerdBin : 'sudo', isRoot ? daemonArgs : ['-n', dockerdBin, ...daemonArgs], {
+      detached: true,
+      env: getDockerExecEnv(),
+      stdio: ['ignore', fd, fd],
+    });
+    child.unref();
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await sleep(500);
+    const after = await dockerAvailable();
+    if (after.ok) {
+      return {
+        ok: true,
+        detail: `Docker Engine ${after.version ?? ''} started locally inside this host (${useSandboxFlags ? 'sandbox crun+vfs' : 'native'}).`.trim(),
+      };
+    }
+  }
+
+  let tailErr = '';
+  try {
+    const lines = fs.readFileSync(rt.logPath, 'utf8').trim().split(/\r?\n/);
+    tailErr = lines.slice(-3).join(' | ');
+  } catch {
+    // Ignore log read errors.
+  }
+
   return {
     ok: false,
-    detail: `Docker CLI is installed, but the local daemon (dockerd) is not installed or could not be started. ${current.hint ?? ''}`.trim(),
+    detail: `Docker daemon failed to become ready (${rt.logPath})${tailErr ? `: ${tailErr}` : ''}`,
   };
 }
 
@@ -334,6 +393,9 @@ async function hasBinary(binary: string): Promise<boolean> {
   if (binary === 'docker') {
     return Boolean(findDockerBinary());
   }
+  if (binary === 'dockerd') {
+    return Boolean(findDockerdBinary());
+  }
   try {
     await execFileAsync('which', [binary], { env: getDockerExecEnv(), timeout: 3000 });
     return true;
@@ -343,6 +405,11 @@ async function hasBinary(binary: string): Promise<boolean> {
 }
 
 function composeArgs(profile: string, command: string[]): string[] {
+  const sandbox = detectServerlessSandbox();
+  if (sandbox.isServerlessSandbox && !getConfiguredDockerHost()) {
+    const overrideFile = ensureSandboxComposeOverride();
+    return ['compose', '-f', paths.composeFile, '-f', overrideFile, '--profile', profile, ...command];
+  }
   return ['compose', '-f', paths.composeFile, '--profile', profile, ...command];
 }
 
@@ -407,7 +474,10 @@ export async function getSecurityToolStatus(id: SecurityToolId): Promise<Securit
           state === 'running'
             ? `Container ${toolServiceName(id)} is ${container.state}${container.health ? ` (${container.health})` : ''}.`
             : `Container ${toolServiceName(id)} is ${container.state}.`,
-        logTail: state === 'running' ? await getSecurityToolLogs(id, 20) : undefined,
+        logTail:
+          state === 'running' || state === 'error'
+            ? await getSecurityToolLogs(id, state === 'error' ? 12 : 20)
+            : undefined,
       };
     }
   }
@@ -425,9 +495,7 @@ export async function getSecurityToolStatus(id: SecurityToolId): Promise<Securit
     state: dockerState.ok ? 'stopped' : 'unavailable',
     detail: dockerState.ok
       ? `${tool.name} container is not running. Start it from the Security Stack panel.`
-      : dockerState.serverlessSandbox && dockerState.cliInstalled && !dockerState.remoteHost
-        ? 'Container engine requires remote DOCKER_HOST or VPS dockerd (CLI + Compose ready).'
-        : dockerState.detail,
+      : 'Docker Engine is starting or stopped; press Start Docker.',
   };
 }
 
@@ -526,7 +594,7 @@ export async function startSecurityTool(
   const service = tool.composeService ?? tool.id;
   const result = await docker(
     composeArgs(profile, ['up', '-d', '--no-deps', '--force-recreate', service]),
-    120_000,
+    180_000,
   );
   if (!result.ok) {
     return {

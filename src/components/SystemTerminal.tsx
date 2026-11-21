@@ -59,10 +59,12 @@ export function SystemTerminal({ lang }: { lang: Language }) {
     });
     socket.on('disconnect', () => {
       setConnected(false);
+      setRunning(false);
       append({ stream: 'system', data: L(lang, '\n[সংযোগ বিচ্ছিন্ন]\n', '\n[disconnected]\n') });
     });
     socket.on('connect_error', (error) => {
       setConnected(false);
+      setRunning(false);
       append({ stream: 'stderr', data: `[connect] ${error.message}\n` });
     });
     socket.on('terminal:output', append);

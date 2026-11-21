@@ -1,0 +1,20 @@
+# Auto-generated override for bundled sandbox dockerd (--bridge=none)
+services:
+  wazuh-manager:
+    network_mode: host
+    ports: !reset []
+  cowrie:
+    network_mode: host
+    ports: !reset []
+  opencanary:
+    network_mode: host
+    ports: !reset []
+  conpot:
+    network_mode: host
+    ports: !reset []
+  beelzebub:
+    network_mode: host
+    ports: !reset []
+  hfish:
+    network_mode: host
+    ports: !reset []

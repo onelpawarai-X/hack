@@ -1,6 +1,10 @@
 import type { SecurityToolId } from '../../src/types/securityStack.ts';
 import { SECURITY_TOOLS } from './catalog.ts';
-import { ensureBundledDockerCli } from './dockerEnv.ts';
+import {
+  detectServerlessSandbox,
+  ensureBundledDockerCli,
+  findDockerdBinary,
+} from './dockerEnv.ts';
 import {
   getDockerAvailability,
   getSecurityToolStatus,
@@ -9,13 +13,27 @@ import {
 } from './manager.ts';
 
 const ENABLED = process.env.SENTINEL_AUTOSTART_STACK !== 'false';
-const DEFAULT_TOOLS = SECURITY_TOOLS.filter((tool) => tool.deployment !== 'appliance')
-  .map((tool) => tool.id)
-  .join(',');
-const TARGETS = (process.env.SENTINEL_AUTOSTART_TOOLS ?? DEFAULT_TOOLS)
-  .split(',')
-  .map((value) => value.trim())
-  .filter((value): value is SecurityToolId => SECURITY_TOOLS.some((tool) => tool.id === value));
+const SANDBOX_SAFE_TOOLS: SecurityToolId[] = ['beelzebub'];
+
+export function resolveAutoStartTargets(opts?: {
+  envTools?: string;
+  isServerlessSandbox?: boolean;
+}): SecurityToolId[] {
+  const raw = opts?.envTools ?? process.env.SENTINEL_AUTOSTART_TOOLS;
+  if (raw !== undefined) {
+    return raw
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value): value is SecurityToolId => SECURITY_TOOLS.some((tool) => tool.id === value));
+  }
+  const isSandbox = opts?.isServerlessSandbox ?? detectServerlessSandbox().isServerlessSandbox;
+  if (isSandbox) {
+    return SANDBOX_SAFE_TOOLS;
+  }
+  return SECURITY_TOOLS.filter((tool) => tool.deployment !== 'appliance').map((tool) => tool.id);
+}
+
+const TARGETS = resolveAutoStartTargets();
 
 const RETRY_MS = Number(process.env.SENTINEL_STACK_RETRY_MS) || 30 * 1000;
 const DOCKER_RETRY_MS = Number(process.env.SENTINEL_DOCKER_RETRY_MS) || 30 * 1000;
@@ -24,16 +42,18 @@ let timer: NodeJS.Timeout | null = null;
 let busy = false;
 let lastDockerAttempt = 0;
 let dockerReady = false;
-let attemptedCliBootstrap = false;
-let loggedSandboxNotice = false;
+let attemptedBundleBootstrap = false;
 
 async function ensureDocker(): Promise<boolean> {
   let availability = await getDockerAvailability().catch(() => null);
   if (!availability) return false;
 
-  if ((!availability.cliInstalled || !availability.composeAvailable) && !attemptedCliBootstrap) {
-    attemptedCliBootstrap = true;
-    console.log('[security-stack] Ensuring static Docker CLI + Compose v2 binary...');
+  if (
+    (!availability.cliInstalled || !availability.composeAvailable || !findDockerdBinary()) &&
+    !attemptedBundleBootstrap
+  ) {
+    attemptedBundleBootstrap = true;
+    console.log('[security-stack] Ensuring bundled Docker Engine (dockerd + CLI + crun + Compose)...');
     await ensureBundledDockerCli().catch(() => undefined);
     availability = (await getDockerAvailability().catch(() => null)) ?? availability;
   }
@@ -41,11 +61,10 @@ async function ensureDocker(): Promise<boolean> {
   if (availability.ok) {
     if (!dockerReady) {
       console.log(
-        `[security-stack] Docker ${availability.version ?? ''} ready; auto-managing the security stack.`.trim(),
+        `[security-stack] Docker ${availability.version ?? ''} ready locally; auto-managing the security stack.`.trim(),
       );
     }
     dockerReady = true;
-    loggedSandboxNotice = false;
     return true;
   }
 
@@ -55,19 +74,9 @@ async function ensureDocker(): Promise<boolean> {
     return false;
   }
 
-  if (availability.serverlessSandbox && !availability.remoteHost) {
-    if (!loggedSandboxNotice) {
-      loggedSandboxNotice = true;
-      console.log(
-        `[security-stack] Docker CLI ready (${availability.cliPath ?? 'bundled'}) inside serverless gVisor sandbox; built-in Node sensors active. Configure a remote DOCKER_HOST to manage external containers.`,
-      );
-    }
-    return false;
-  }
-
   if (Date.now() - lastDockerAttempt < DOCKER_RETRY_MS) return false;
   lastDockerAttempt = Date.now();
-  console.log('[security-stack] Docker daemon is not reachable; starting it automatically…');
+  console.log('[security-stack] Starting local Docker daemon automatically inside container…');
   const started = await startDockerDaemon().catch((error) => ({
     ok: false,
     detail: error instanceof Error ? error.message : String(error),

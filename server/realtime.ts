@@ -183,6 +183,8 @@ export function attachRealtime(httpServer: HttpServer) {
     cors: { origin: true, credentials: false },
     path: '/socket.io',
     maxHttpBufferSize: 1e6,
+    pingTimeout: 60_000,
+    pingInterval: 25_000,
   });
 
   const windows = new Map<string, { count: number; startedAt: number }>();

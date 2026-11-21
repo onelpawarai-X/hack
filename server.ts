@@ -86,9 +86,9 @@ import {
 import { scanTargetOrWeb, traceAttackerIp } from './server/scanner.ts';
 import { SECURITY_TOOLS, getSecurityTool } from './server/securityStack/catalog.ts';
 import { startSecurityStackLogTailer } from './server/securityStack/logTailer.ts';
-import { startSecurityStackSupervisor } from './server/securityStack/supervisor.ts';
+import { resolveAutoStartTargets, startSecurityStackSupervisor } from './server/securityStack/supervisor.ts';
 import { installDockerEngine } from './server/securityStack/installer.ts';
-import { setConfiguredDockerHost } from './server/securityStack/dockerEnv.ts';
+import { detectServerlessSandbox, setConfiguredDockerHost } from './server/securityStack/dockerEnv.ts';
 import { startDockerDaemon } from './server/securityStack/manager.ts';
 import { buildSecurityToolConfig, writeSecurityToolConfigs } from './server/securityStack/configs.ts';
 import {
@@ -156,12 +156,6 @@ async function startServer() {
   // It observes dashboard/API traffic but never blocks it; decoy paths are tarpitted.
   app.use(attackSensor.middleware);
 
-  // Start continuous 24/7 global cyber threat monitor & shield watchdog loops
-  threatMonitor.start();
-  startGlobalExposureMonitor();
-  defenseEngine.startWatchdog();
-  startSecurityStackLogTailer();
-  startSecurityStackSupervisor();
   try {
     writeSecurityToolConfigs();
   } catch (err) {
@@ -1136,10 +1130,15 @@ async function startServer() {
     });
   });
 
-  app.post('/api/security-stack/start-all', requireAuth, async (_req, res) => {
+  app.post('/api/security-stack/start-all', requireAuth, async (req, res) => {
+    const forceAll = req.body?.all === true || req.query?.all === 'true';
+    const isSandbox = detectServerlessSandbox().isServerlessSandbox;
+    const allowedIds =
+      isSandbox && !forceAll ? new Set(resolveAutoStartTargets({ isServerlessSandbox: true })) : null;
     const results = [];
     for (const tool of SECURITY_TOOLS) {
       if (tool.deployment === 'appliance') continue;
+      if (allowedIds && !allowedIds.has(tool.id)) continue;
       results.push({ id: tool.id, ...(await startSecurityTool(tool.id)) });
     }
     return res.json({ results, snapshot: await getSecurityStackSnapshot() });
@@ -1332,6 +1331,13 @@ async function startServer() {
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`SentinelGlobe Cyber Threat Monitor listening on http://localhost:${PORT}`);
     console.log('Realtime Socket.io scanning channel ready at /socket.io');
+
+    // Start background threat monitors and local Docker stack supervisor once port 3000 is open
+    threatMonitor.start();
+    startGlobalExposureMonitor();
+    defenseEngine.startWatchdog();
+    startSecurityStackLogTailer();
+    startSecurityStackSupervisor();
   });
 }
 
