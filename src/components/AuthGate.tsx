@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../hooks/useAuth.tsx';
+import { SiteAgentDownloadButton } from './SiteAgentDownloadButton';
 
 type Lang = 'bn' | 'en';
 
@@ -111,6 +112,7 @@ function AuthScreen({ lang, onLang }: { lang: Lang; onLang: (lang: Lang) => void
     <div className="min-h-screen relative overflow-hidden flex items-center justify-center px-4 py-10">
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_15%_0%,rgba(239,68,68,0.14),transparent_38%),radial-gradient(circle_at_85%_100%,rgba(34,211,238,0.10),transparent_42%)]" />
       <div className="absolute inset-0 pointer-events-none opacity-[0.14] [background-image:linear-gradient(rgba(148,163,184,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.18)_1px,transparent_1px)] [background-size:44px_44px]" />
+      <SiteAgentDownloadButton lang={lang} floating />
 
       <div className="relative w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
         <div className="hidden lg:flex flex-col justify-between rounded-2xl border border-red-500/20 bg-[#0B101B]/85 p-8 shadow-[0_0_60px_rgba(239,68,68,0.08)]">
@@ -275,7 +277,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (loading || !status) {
     return (
-      <div className="min-h-screen grid place-items-center bg-[#06090F] text-slate-300">
+      <div className="min-h-screen relative grid place-items-center bg-[#06090F] text-slate-300">
+        <SiteAgentDownloadButton lang={lang} floating />
         <div className="inline-flex items-center gap-2 text-xs">
           <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
           {COPY[lang].loading}

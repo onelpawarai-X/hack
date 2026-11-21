@@ -16,8 +16,10 @@ import {
 } from './server/abuseMailer.ts';
 import { buildAttackerDossier } from './server/attackerDossier.ts';
 import { cameraRegistry } from './server/cameraRegistry.ts';
-import { findOsmSurveillance, findOsmSurveillanceBbox } from './server/publicCameras.ts';
+import { findOsmSurveillance, findOsmSurveillanceBbox, findOverpassSurveillanceBbox } from './server/publicCameras.ts';
 import { nearbyPublicFeeds } from './server/publicCameraFeeds.ts';
+import { buildSiteAgentBundle } from './server/siteAgentBundle.ts';
+import { createZip } from './server/zip.ts';
 import { localCve } from './server/localCve.ts';
 import { localIoc } from './server/localIoc.ts';
 import {
@@ -288,6 +290,31 @@ async function startServer() {
     return res.json({ ok: true, at: new Date().toISOString() });
   });
 
+  // Public download. No login is required: a site owner can download the agent
+  // and README before creating an account. The beacon below registers the site.
+  app.get('/api/agent/download', (_req, res) => {
+    try {
+      const forwardedProto = String(_req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
+      const origin =
+        process.env.PUBLIC_ORIGIN?.replace(/\/$/, '') ||
+        `${forwardedProto || _req.protocol}://${_req.headers.host ?? 'localhost'}`;
+      const archive = createZip(buildSiteAgentBundle({ origin }));
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader(
+        'Content-Disposition',
+        'attachment; filename="sentinelglobe-site-agent.zip"',
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      return res.send(archive);
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Could not build the site-agent package.',
+        details: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   // Public browser-agent beacon. Site owners include /sentinel-agent.js on their
   // pages; the agent reports client-side attack indicators back to this control plane.
   app.options('/api/agent/beacon', (_req, res) => {
@@ -465,7 +492,11 @@ async function startServer() {
 
   app.post('/api/verify-ownership/check', verifyRateLimiter, async (req, res) => {
     const rawTarget = String(req.body?.target ?? '').trim();
-    const method = req.body?.method === 'http-file' ? 'http-file' : 'dns-txt';
+    const requestedMethod = String(req.body?.method ?? 'dns-txt');
+    const method =
+      requestedMethod === 'http-file' || requestedMethod === 'html-meta'
+        ? requestedMethod
+        : 'dns-txt';
     if (rawTarget.length < 3) {
       return res.status(400).json({ error: 'Target domain or URL is required.' });
     }
@@ -691,6 +722,15 @@ async function startServer() {
       return res.status(400).json({ error: 'Valid lat and lon are required.' });
     }
     const result = await findOsmSurveillance(lat, lon, radius);
+    return res.status(result.ok ? 200 : 502).json(result);
+  });
+
+  app.get('/api/cameras/overpass-bbox', async (req, res) => {
+    const south = Number(req.query.south);
+    const west = Number(req.query.west);
+    const north = Number(req.query.north);
+    const east = Number(req.query.east);
+    const result = await findOverpassSurveillanceBbox(south, west, north, east);
     return res.status(result.ok ? 200 : 502).json(result);
   });
 

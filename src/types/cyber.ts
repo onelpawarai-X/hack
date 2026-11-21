@@ -249,13 +249,15 @@ export interface ActiveVulnFinding {
 export interface DomainVerificationStatus {
   domain: string;
   verified: boolean;
-  method?: 'dns-txt' | 'http-file' | 'agent-beacon';
+  method?: 'dns-txt' | 'http-file' | 'html-meta' | 'agent-beacon';
   verifiedAt?: string;
   token: string;
   txtRecordHost: string;
   txtRecordValue: string;
   httpFilePath: string;
   httpFileContent: string;
+  metaTagName: string;
+  metaTagContent: string;
   expiresAt: string;
   error?: string;
 }
@@ -474,6 +476,7 @@ export interface BlockedIpEntry {
     detail: string;
     appliedAt?: string;
   };
+  wafEnforcement?: Array<{ provider: string; ok: boolean; detail: string }>;
   firewallRules: {
     nginx: string;
     iptables: string;

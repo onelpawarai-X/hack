@@ -176,14 +176,25 @@ export function GlobalCameraSection({
         east: String(bounds.getEast()),
       });
       const center = bounds.getCenter();
-      const [osmRes, feedRes] = await Promise.all([
-        fetch(`/api/cameras/osm-bbox?${params.toString()}`, { cache: 'no-store' }),
+      const loadOsm = async (): Promise<CameraResponse> => {
+        const direct = await fetch(`/api/cameras/osm-bbox?${params.toString()}`, {
+          cache: 'no-store',
+        });
+        if (direct.ok) {
+          const payload = (await direct.json().catch(() => null)) as CameraResponse | null;
+          if (payload?.ok) return payload;
+        }
+        const overpass = await fetch(`/api/cameras/overpass-bbox?${params.toString()}`, {
+          cache: 'no-store',
+        });
+        return (await overpass.json().catch(() => ({ cameras: [] }))) as CameraResponse;
+      };
+      const [osmPayload, feedPayload] = await Promise.all([
+        loadOsm(),
         fetch(`/api/cameras/public-nearby?lat=${center.lat}&lon=${center.lng}&radius=80`, {
           cache: 'no-store',
-        }),
+        }).then((response) => response.json().catch(() => ({ cameras: [] })) as Promise<CameraResponse>),
       ]);
-      const osmPayload = (await osmRes.json().catch(() => ({ cameras: [] }))) as CameraResponse;
-      const feedPayload = (await feedRes.json().catch(() => ({ cameras: [] }))) as CameraResponse;
       const merged = [...(osmPayload.cameras ?? []), ...(feedPayload.cameras ?? [])]
         .filter((camera, index, list) => list.findIndex((item) => item.id === camera.id) === index)
         .sort((a, b) => a.distanceKm - b.distanceKm);
@@ -299,6 +310,20 @@ export function GlobalCameraSection({
               lang,
               'ওপেনস্ট্রিটম্যাপে ম্যাপ করা পাবলিক সার্ভেইল্যান্স ও স্ট্রিট ক্যামেরা। ম্যাপ যেখানে নিয়ে যাবেন, সেখানকার ক্যামেরা লোড হবে। কোনো আক্রমণকারী IP সিলেক্ট করলে তার আশেপাশের ক্যামেরাও লোড হবে।',
               'Public surveillance and street cameras mapped in OpenStreetMap. Pan/zoom anywhere to load that area. Select an attacker IP to load cameras around it.',
+            )}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1 text-[9px] text-slate-400">
+            {['NYC DOT', 'TfL JamCams', 'Caltrans (12 districts)', 'OpenStreetMap', 'Windy (key)', 'Operator feeds'].map((source) => (
+              <span key={source} className="rounded-full border border-slate-700 bg-slate-900/70 px-2 py-0.5">
+                {source}
+              </span>
+            ))}
+          </div>
+          <p className="mt-1 text-[9px] text-amber-300/70">
+            {L10N(
+              lang,
+              'শুধু পাবলিক বা অপারেটর-অনুমোদিত স্ট্রিম। বেসরকারি CCTV বা লগইন-প্রোটেক্টেড ক্যামেরা অ্যাক্সেস করা হয় না।',
+              'Public or operator-authorised streams only. Private CCTV and login-protected cameras are never accessed.',
             )}
           </p>
           {focus && (

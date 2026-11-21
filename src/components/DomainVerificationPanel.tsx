@@ -15,7 +15,7 @@ export function DomainVerificationPanel({
   onVerified,
 }: DomainVerificationPanelProps) {
   const [domain, setDomain] = useState(defaultDomain ?? '');
-  const [method, setMethod] = useState<'dns-txt' | 'http-file'>('dns-txt');
+  const [method, setMethod] = useState<'dns-txt' | 'http-file' | 'html-meta'>('dns-txt');
   const [status, setStatus] = useState<DomainVerificationStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,11 +128,15 @@ export function DomainVerificationPanel({
         </div>
         <select
           value={method}
-          onChange={(event) => setMethod(event.target.value === 'http-file' ? 'http-file' : 'dns-txt')}
+          onChange={(event) => {
+            const value = event.target.value;
+            setMethod(value === 'http-file' || value === 'html-meta' ? value : 'dns-txt');
+          }}
           className="px-3 py-2 rounded-lg bg-[#06090F] border border-slate-700 focus:border-cyan-500 focus:outline-none text-xs text-slate-200 cursor-pointer"
         >
           <option value="dns-txt">{t.verifyMethodDns}</option>
           <option value="http-file">{t.verifyMethodHttp}</option>
+          <option value="html-meta">{t.verifyMethodMeta}</option>
         </select>
         <button
           type="button"
@@ -177,6 +181,29 @@ export function DomainVerificationPanel({
               >
                 <Copy className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-[#06090F] border border-slate-800 p-2.5 space-y-1.5">
+            <div className="text-slate-400">{t.verifyMetaTag}</div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-cyan-200 break-all">{`<meta name="${status.metaTagName}" content="${status.metaTagContent}">`}</code>
+              <button
+                type="button"
+                onClick={() =>
+                  void copy(
+                    'metaTag',
+                    `<meta name="${status.metaTagName}" content="${status.metaTagContent}">`,
+                  )
+                }
+                className="text-slate-400 hover:text-cyan-300 cursor-pointer shrink-0"
+                aria-label="Copy meta tag"
+              >
+                <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              {t.verifyHint}
             </div>
           </div>
 

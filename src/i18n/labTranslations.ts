@@ -49,6 +49,8 @@ export interface LabTranslations {
   verifyChecking: string;
   verifyMethodDns: string;
   verifyMethodHttp: string;
+  verifyMethodMeta: string;
+  verifyMetaTag: string;
   verifyVerified: string;
   verifyPending: string;
   verifyTokenLabel: string;
@@ -119,6 +121,8 @@ const BN: LabTranslations = {
   verifyChecking: 'যাচাই চলছে...',
   verifyMethodDns: 'ডিএনএস টেক্সট রেকর্ড',
   verifyMethodHttp: 'এইচটিটিপি ফাইল',
+  verifyMethodMeta: 'HTML মেটা ট্যাগ',
+  verifyMetaTag: 'মেটা ট্যাগ',
   verifyVerified: 'যাচাই সম্পন্ন',
   verifyPending: 'এখনো যাচাই হয়নি',
   verifyTokenLabel: 'টোকেন',
@@ -189,6 +193,8 @@ const EN: LabTranslations = {
   verifyChecking: 'Verifying...',
   verifyMethodDns: 'DNS TXT record',
   verifyMethodHttp: 'HTTP file',
+  verifyMethodMeta: 'HTML meta tag',
+  verifyMetaTag: 'Meta tag',
   verifyVerified: 'Verified',
   verifyPending: 'Not verified yet',
   verifyTokenLabel: 'Token',

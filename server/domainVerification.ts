@@ -16,7 +16,7 @@ function getSigningSecret(): string {
 
 export interface VerifiedDomainGrant {
   domain: string;
-  method: 'dns-txt' | 'http-file' | 'agent-beacon';
+  method: 'dns-txt' | 'http-file' | 'html-meta' | 'agent-beacon';
   verifiedAt: string;
   expiresAt: number;
   token: string;
@@ -51,6 +51,15 @@ export function matchesTxtVerificationToken(txtRecords: string[], expectedToken:
 export function matchesHttpVerificationBody(body: string, expectedToken: string): boolean {
   if (!body) return false;
   return body.trim().includes(expectedToken.trim());
+}
+
+export function matchesHtmlMetaVerification(body: string, expectedToken: string): boolean {
+  if (!body) return false;
+  const token = expectedToken.trim().toLowerCase();
+  return body
+    .toLowerCase()
+    .split(/<meta\b/i)
+    .some((part) => part.includes('sentinelglobe-site-verification') && part.includes(token));
 }
 
 class DomainVerificationStore {
@@ -107,6 +116,8 @@ class DomainVerificationStore {
       txtRecordValue: token,
       httpFilePath: '/.well-known/sentinelglobe-verify.txt',
       httpFileContent: token,
+      metaTagName: 'sentinelglobe-site-verification',
+      metaTagContent: token,
       expiresAt: expiresIso,
     };
   }
@@ -125,7 +136,7 @@ class DomainVerificationStore {
     return true;
   }
 
-  public markVerified(domain: string, method: 'dns-txt' | 'http-file' | 'agent-beacon', now = Date.now()): VerifiedDomainGrant {
+  public markVerified(domain: string, method: 'dns-txt' | 'http-file' | 'html-meta' | 'agent-beacon', now = Date.now()): VerifiedDomainGrant {
     this.load();
     const normalized = normalizeVerificationDomain(domain);
     const token = buildDomainVerificationToken(normalized);
@@ -143,7 +154,7 @@ class DomainVerificationStore {
 
   public async verifyDomainOwnership(
     rawTarget: string,
-    method: 'dns-txt' | 'http-file' | 'agent-beacon',
+    method: 'dns-txt' | 'http-file' | 'html-meta' | 'agent-beacon',
   ): Promise<DomainVerificationStatus> {
     const domain = normalizeVerificationDomain(rawTarget);
     if (!domain || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) {
@@ -167,6 +178,41 @@ class DomainVerificationStore {
         ...status,
         verified: false,
         error: `DNS TXT record "${expectedToken}" not found at _sentinelglobe-verify.${domain} or ${domain}.`,
+      };
+    }
+
+    if (method === 'html-meta') {
+      for (const candidateUrl of [`https://${domain}/`, `https://www.${domain}/`]) {
+        try {
+          await assertSafePublicUrl(candidateUrl);
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
+          try {
+            const res = await fetch(candidateUrl, {
+              method: 'GET',
+              redirect: 'follow',
+              signal: controller.signal,
+              headers: { 'User-Agent': 'SentinelGlobe-OwnershipVerifier/1.0' },
+            });
+            if (res.ok) {
+              const html = (await res.text()).slice(0, 200_000);
+              if (matchesHtmlMetaVerification(html, expectedToken)) {
+                this.markVerified(domain, 'html-meta');
+                return this.getStatus(domain);
+              }
+            }
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch {
+          // try next host variant
+        }
+      }
+      const status = this.getStatus(domain);
+      return {
+        ...status,
+        verified: false,
+        error: `Meta tag "<meta name="sentinelglobe-site-verification" content="${expectedToken}">" was not found on https://${domain}/.`,
       };
     }
 

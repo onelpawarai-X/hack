@@ -63,6 +63,15 @@ export function SentinelAgentBadge({ lang }: { lang: Language }) {
             {L(lang, 'sentinel-agent.js ডাউনলোড', 'Download sentinel-agent.js')}
           </a>
 
+          <a
+            href="/api/agent/download"
+            download="sentinelglobe-site-agent.zip"
+            className="mb-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/20"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {L(lang, 'ZIP + README ডাউনলোড', 'Download ZIP + README')}
+          </a>
+
           <label className="mb-1 block text-[9px] uppercase tracking-wide text-slate-500">
             {L(lang, 'আপনার ডোমেইন', 'Your domain')}
           </label>

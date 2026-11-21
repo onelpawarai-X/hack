@@ -8,6 +8,7 @@ import { DefenseGrid } from './components/DefenseGrid';
 import { GlobalCameraSection } from './components/GlobalCameraSection';
 import { GlobalExposureSection } from './components/GlobalExposureSection';
 import { SentinelAgentBadge } from './components/SentinelAgentBadge';
+import { SiteAgentDownloadButton } from './components/SiteAgentDownloadButton';
 import { WebsiteNetworkSection } from './components/WebsiteNetworkSection';
 import { DomainVerificationPanel } from './components/DomainVerificationPanel';
 import { EthicalBanner } from './components/EthicalBanner';
@@ -608,6 +609,8 @@ function AppDashboard() {
                 English
               </button>
             </div>
+
+            <SiteAgentDownloadButton lang={lang} />
           </div>
         </div>
       </header>

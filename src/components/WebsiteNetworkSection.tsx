@@ -1,6 +1,7 @@
 import { Activity, ExternalLink, Globe2, Loader2, RefreshCw, ShieldAlert, ShieldCheck, Users } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { AgentSiteSnapshot, Language } from '../types/cyber';
+import { SiteAgentDownloadButton } from './SiteAgentDownloadButton';
 
 const L = (lang: Language, bn: string, en: string) => (lang === 'bn' ? bn : en);
 
@@ -82,6 +83,29 @@ export function WebsiteNetworkSection({
         </button>
       </div>
 
+      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-bold text-emerald-100">
+              {L(lang, 'আপনার ওয়েবসাইটে বসান — অ্যাকাউন্ট ছাড়াই ডাউনলোড', 'Install on your website — download without an account')}
+            </div>
+            <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-slate-400">
+              {L(
+                lang,
+                'ZIP-এ এজেন্ট, README, ইনস্টল গাইড ও snippet আছে। snippet বসালেই প্রথম beacon-এ সাইটটি এই লিস্টে নিজে থেকে চলে আসবে।',
+                'The ZIP contains the agent, README, install guide and snippet. After the first beacon the site appears in this list automatically.',
+              )}
+            </p>
+          </div>
+          <SiteAgentDownloadButton lang={lang} />
+        </div>
+        <div className="mt-2 grid gap-1 text-[10px] text-slate-400 sm:grid-cols-3">
+          <span>1. {L(lang, 'ZIP ডাউনলোড করুন', 'Download the ZIP')}</span>
+          <span>2. {L(lang, 'snippet সাইটে বসান', 'Add the snippet')}</span>
+          <span>3. {L(lang, 'এখানে সাইট দেখুন, Protect চাপুন', 'See the site here, click Protect')}</span>
+        </div>
+      </div>
+
       {error && <div className="rounded border border-red-500/30 bg-red-500/10 p-2 text-[10px] text-red-200">{error}</div>}
       {notice && (
         <div className="rounded border border-emerald-500/30 bg-emerald-500/10 p-2 text-[10px] text-emerald-200">
@@ -125,12 +149,20 @@ export function WebsiteNetworkSection({
                 <th className="px-2 py-1.5">{L(lang, 'Beacon', 'Beacons')}</th>
                 <th className="px-2 py-1.5">{L(lang, 'থ্রেট', 'Threats')}</th>
                 <th className="px-2 py-1.5">{L(lang, 'স্ট্যাটাস', 'Status')}</th>
+                <th className="px-2 py-1.5">{L(lang, 'স্কোর', 'Score')}</th>
                 <th className="px-2 py-1.5 text-right">{L(lang, 'সুরক্ষা', 'Protection')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {sites.map((site) => {
                 const live = Date.now() - Date.parse(site.lastSeen) < 15 * 60_000;
+                const score = Math.min(
+                  100,
+                  (site.verified ? 30 : 0) +
+                    (site.shield ? 40 : 0) +
+                    (live ? 20 : 0) +
+                    (site.threats === 0 ? 10 : 0),
+                );
                 return (
                   <tr key={site.site} className="align-middle">
                     <td className="px-2 py-2">
@@ -171,6 +203,17 @@ export function WebsiteNetworkSection({
                             {site.shield.status}
                           </span>
                         )}
+                      </div>
+                    </td>
+                    <td className="px-2 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 w-14 overflow-hidden rounded-full bg-slate-800">
+                          <div
+                            className={`h-full ${score >= 80 ? 'bg-emerald-400' : score >= 50 ? 'bg-amber-400' : 'bg-red-400'}`}
+                            style={{ width: `${score}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-slate-300">{score}%</span>
                       </div>
                     </td>
                     <td className="px-2 py-2 text-right">

@@ -228,6 +228,77 @@ export function parseOsmMapXmlBbox(
   return cameras.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, limit);
 }
 
+export async function findOverpassSurveillanceBbox(
+  south: number,
+  west: number,
+  north: number,
+  east: number,
+): Promise<OsmSurveillanceResult> {
+  const bbox = { south, west, north, east };
+  if (![south, west, north, east].every(Number.isFinite)) {
+    return { ok: false, source: 'OpenStreetMap', bbox, fetchedAt: new Date().toISOString(), cameras: [], error: 'Invalid bounding box.' };
+  }
+  const box = `${south},${west},${north},${east}`;
+  const query = `[out:json][timeout:25];(nwr["man_made"="surveillance"](${box});nwr["highway"="speed_camera"](${box});nwr["contact:webcam"](${box}););out center tags 800;`;
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ];
+  let lastError = 'Overpass query failed';
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+          'User-Agent': 'SentinelGlobe/1.0 (public camera map)',
+        },
+        body: `data=${encodeURIComponent(query)}`,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+      const payload = (await res.json()) as { elements?: Array<Record<string, unknown>> };
+      const centerLat = (south + north) / 2;
+      const centerLon = (west + east) / 2;
+      const cameras: OsmSurveillanceCamera[] = [];
+      for (const element of payload.elements ?? []) {
+        const lat = Number(element.lat ?? (element.center as Record<string, unknown> | undefined)?.lat);
+        const lon = Number(element.lon ?? (element.center as Record<string, unknown> | undefined)?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const tags = (element.tags ?? {}) as Record<string, string>;
+        const camera = buildCamera(
+          `${String(element.type ?? 'node')}/${String(element.id ?? '')}`,
+          lat,
+          lon,
+          tags,
+          centerLat,
+          centerLon,
+        );
+        if (camera) cameras.push(camera);
+      }
+      return {
+        ok: true,
+        source: 'OpenStreetMap',
+        bbox,
+        fetchedAt: new Date().toISOString(),
+        cameras: cameras.slice(0, 800),
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'Overpass query failed';
+    }
+  }
+  return {
+    ok: false,
+    source: 'OpenStreetMap',
+    bbox,
+    fetchedAt: new Date().toISOString(),
+    cameras: [],
+    error: lastError,
+  };
+}
+
 export async function findOsmSurveillanceBbox(
   south: number,
   west: number,
