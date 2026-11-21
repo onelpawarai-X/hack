@@ -61,6 +61,10 @@ class ThreatMonitorService {
     }, REFRESH_INTERVAL_MS);
   }
 
+  public getCachedSnapshot(): RadarSnapshot | null {
+    return this.snapshot;
+  }
+
   public async getSnapshot(forceRefresh = false): Promise<RadarSnapshot> {
     if (!forceRefresh && this.snapshot) {
       const age = Date.now() - new Date(this.snapshot.scannedAt).getTime();

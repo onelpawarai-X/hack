@@ -1,4 +1,5 @@
 import type { ScanModuleId, TargetScanResult, ThreatSeverity } from './cyber.ts';
+import type { AttackEvent } from './defenseGrid.ts';
 
 export type ScanLogLevel = 'info' | 'success' | 'warn' | 'error' | 'debug';
 
@@ -73,6 +74,17 @@ export interface ScanSocketAck {
   error?: string;
 }
 
+export interface DefenseAlertPayload {
+  event: AttackEvent;
+  blocked: boolean;
+  firewallRules: {
+    nginx: string;
+    iptables: string;
+    ufw: string;
+    cloudflare: string;
+  };
+}
+
 export interface ServerToClientEvents {
   'server:ready': (payload: { at: string; scannerOrigin: ScannerOrigin | null }) => void;
   'scan:log': (event: ScanLogEvent) => void;
@@ -80,6 +92,8 @@ export interface ServerToClientEvents {
   'scan:geo': (payload: ScanGeoPayload) => void;
   'scan:result': (payload: ScanResultPayload) => void;
   'scan:error': (payload: ScanErrorPayload) => void;
+  'attack:event': (event: AttackEvent) => void;
+  'defense:alert': (payload: DefenseAlertPayload) => void;
 }
 
 export interface ClientToServerEvents {

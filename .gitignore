@@ -7,3 +7,4 @@ coverage/
 .env*
 !.env.example
 .sentinel-defense-state.json
+.sentinel-sensor-state.json

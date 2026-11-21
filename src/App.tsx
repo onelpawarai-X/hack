@@ -1,6 +1,7 @@
 import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AttackerInspector } from './components/AttackerInspector';
+import { DefenseGrid } from './components/DefenseGrid';
 import { DomainVerificationPanel } from './components/DomainVerificationPanel';
 import { EthicalBanner } from './components/EthicalBanner';
 import { ImageForensicsPanel } from './components/ImageForensicsPanel';
@@ -11,8 +12,10 @@ import { ScanProgressBar } from './components/ScanProgressBar';
 import { SeverityCharts } from './components/SeverityCharts';
 import { TargetScannerPanel } from './components/TargetScannerPanel';
 import { ThreatFeedsMatrix, type MatrixTab } from './components/ThreatFeedsMatrix';
+import { useDefenseGrid } from './hooks/useDefenseGrid';
 import { useScanSocket } from './hooks/useScanSocket';
 import { getCyberTranslations } from './i18n/cyberTranslations';
+import { getDefenseGridTranslations } from './i18n/defenseGridTranslations';
 import { getLabTranslations } from './i18n/labTranslations';
 import type {
   DefenseStateSnapshot,
@@ -55,6 +58,8 @@ export default function App() {
   const [scanError, setScanError] = useState<string | null>(null);
 
   const lab = useMemo(() => getLabTranslations(lang), [lang]);
+  const defenseGridT = useMemo(() => getDefenseGridTranslations(lang), [lang]);
+  const defenseGrid = useDefenseGrid();
   const scanSocket = useScanSocket();
   const [fallbackLogs, setFallbackLogs] = useState<ScanLogEvent[]>([]);
   const [fallbackProgress, setFallbackProgress] = useState<ScanProgressPayload | null>(null);
@@ -420,6 +425,38 @@ export default function App() {
     }
   };
 
+  const handleGridBlockIp = async (ip: string, reason: string) => {
+    try {
+      const res = await fetch('/api/defense/block-ip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip, reason }),
+      });
+      if (res.ok) {
+        const payload = (await res.json()) as { state: DefenseStateSnapshot };
+        setDefenseState(payload.state);
+        await defenseGrid.refresh();
+      }
+    } catch {
+      // keep the grid state; the next poll will reconcile
+    }
+  };
+
+  const handleGridAddSite = async (target: string) => {
+    await handleActivateWebsiteShield(target);
+    await defenseGrid.refresh();
+  };
+
+  const handleGridRecheckSite = async (id: string) => {
+    await handleRecheckShield(id);
+    await defenseGrid.refresh();
+  };
+
+  const handleGridRemoveSite = async (id: string) => {
+    await handleRemoveShield(id);
+    await defenseGrid.refresh();
+  };
+
   const blockedIpStrings = defenseState.blockedIps.map((b) => b.ip);
   const selectedIsBlocked = Boolean(
     selectedNode && blockedIpStrings.includes(selectedNode.ip),
@@ -584,6 +621,28 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {/* Global Defense Grid: real honeypot sensor, live attack stream, auto-defense */}
+        <DefenseGrid
+          t={defenseGridT}
+          snapshot={defenseGrid.snapshot}
+          incidents={radar?.incidents ?? []}
+          loading={defenseGrid.loading}
+          connected={defenseGrid.connected}
+          latestAlert={defenseGrid.latestAlert}
+          report={defenseGrid.report}
+          busy={defenseGrid.busy}
+          onRefresh={() => void defenseGrid.refresh()}
+          onToggleAuto={(enabled) => void defenseGrid.setAutoDefense(enabled)}
+          onAddSafeIp={(ip) => void defenseGrid.addSafeIp(ip)}
+          onReportIp={(ip) => void defenseGrid.reportIp(ip)}
+          onClearReport={defenseGrid.clearReport}
+          onClearStream={() => void defenseGrid.clearStream()}
+          onBlockIp={(ip, reason) => void handleGridBlockIp(ip, reason)}
+          onAddSite={(target) => void handleGridAddSite(target)}
+          onRecheckSite={(id) => void handleGridRecheckSite(id)}
+          onRemoveSite={(id) => void handleGridRemoveSite(id)}
+        />
 
         {/* Deep Target, IP Map Plotting & Website Defense Shield Scanner */}
         <div ref={scannerSectionRef} className="space-y-6">

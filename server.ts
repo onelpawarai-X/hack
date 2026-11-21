@@ -3,8 +3,9 @@ import express from 'express';
 import { createServer } from 'node:http';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { attackSensor } from './server/attackSensor.ts';
 import { domainVerificationStore } from './server/domainVerification.ts';
-import { defenseEngine, lookupRdapIpAbuse } from './server/defenseEngine.ts';
+import { defenseEngine, generateFirewallRulesForIp, lookupRdapIpAbuse } from './server/defenseEngine.ts';
 import { analyzeImageBuffer } from './server/imageForensics.ts';
 import { createRateLimitMiddleware, SlidingWindowRateLimiter } from './server/rateLimiter.ts';
 import { attachRealtime, resolveScannerOrigin } from './server/realtime.ts';
@@ -37,6 +38,10 @@ async function startServer() {
 
   // Real active Express defense firewall middleware (blocks defended attacker IPs)
   app.use(defenseEngine.middleware);
+
+  // Global attack sensor: real honeypot paths, payload signatures, DDoS rate shield.
+  // It observes dashboard/API traffic but never blocks it; decoy paths are tarpitted.
+  app.use(attackSensor.middleware);
 
   // Start continuous 24/7 global cyber threat monitor & shield watchdog loops
   threatMonitor.start();
@@ -232,6 +237,61 @@ async function startServer() {
     return res.json(defenseEngine.getState());
   });
 
+  // Global Defense Grid: real honeypot sensor events, feed intelligence and auto-defense state
+  app.get('/api/defense/grid', async (_req, res) => {
+    try {
+      return res.json(await attackSensor.getSnapshot());
+    } catch (err) {
+      return res.status(502).json({
+        error: 'Defense grid snapshot failed',
+        details: getErrorMessage(err),
+      });
+    }
+  });
+
+  app.post('/api/defense/grid/auto', (req, res) => {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Boolean "enabled" field required.' });
+    }
+    attackSensor.setAutoDefense(req.body.enabled);
+    return res.json({ enabled: req.body.enabled });
+  });
+
+  app.post('/api/defense/grid/safe-ip', (req, res) => {
+    const ip = String(req.body?.ip ?? '').trim();
+    if (!isValidIpv4(ip)) {
+      return res.status(400).json({ error: 'Valid IPv4 address required.' });
+    }
+    const added = attackSensor.addSafeIp(ip);
+    return res.json({ added, safeIps: attackSensor.getSnapshotSafeIps() });
+  });
+
+  app.delete('/api/defense/grid/safe-ip/:ip', (req, res) => {
+    const ip = String(req.params.ip ?? '').trim();
+    const removed = attackSensor.removeSafeIp(ip);
+    return res.json({ removed, safeIps: attackSensor.getSnapshotSafeIps() });
+  });
+
+  app.post('/api/defense/grid/report', async (req, res) => {
+    const ip = String(req.body?.ip ?? '').trim();
+    if (!isValidIpv4(ip)) {
+      return res.status(400).json({ error: 'Valid IPv4 address required.' });
+    }
+    try {
+      return res.json(await attackSensor.buildAbuseReport(ip));
+    } catch (err) {
+      return res.status(502).json({
+        error: 'Abuse report generation failed',
+        details: getErrorMessage(err),
+      });
+    }
+  });
+
+  app.post('/api/defense/grid/clear', (_req, res) => {
+    attackSensor.clearEvents();
+    return res.json({ cleared: true });
+  });
+
   app.post('/api/defense/block-ip', async (req, res) => {
     const ip = String(req.body?.ip ?? '').trim();
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
@@ -333,7 +393,19 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT) || 3000;
   const httpServer = createServer(app);
-  attachRealtime(httpServer);
+  const io = attachRealtime(httpServer);
+
+  attackSensor.setBroadcast((event, alert) => {
+    io.emit('attack:event', event);
+    if (alert && isValidIpv4(event.ip)) {
+      io.emit('defense:alert', {
+        event,
+        blocked: true,
+        firewallRules: generateFirewallRulesForIp(event.ip),
+      });
+    }
+  });
+
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`SentinelGlobe Cyber Threat Monitor listening on http://localhost:${PORT}`);
     console.log('Realtime Socket.io scanning channel ready at /socket.io');
