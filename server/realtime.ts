@@ -10,6 +10,7 @@ import type {
   ScannerOrigin,
   ServerToClientEvents,
 } from '../src/types/realtime.ts';
+import { sessionFromCookie } from './auth.ts';
 import { scanTargetOrWeb, traceAttackerIp } from './scanner.ts';
 import { isValidIpv4 } from './threatRules.ts';
 
@@ -21,28 +22,8 @@ let cachedOrigin: ScannerOrigin | null = null;
 let originFetchedAt = 0;
 
 async function fetchPublicIp(): Promise<string | null> {
-  const providers = [
-    'https://api.ipify.org?format=json',
-    'https://api64.ipify.org?format=json',
-  ];
-  for (const url of providers) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    try {
-      const res = await fetch(url, {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) continue;
-      const json = (await res.json()) as { ip?: string };
-      if (json.ip && isValidIpv4(json.ip)) return json.ip;
-    } catch {
-      // try next provider
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  return null;
+  const { discoverPublicIp } = await import('./publicIp.ts');
+  return discoverPublicIp();
 }
 
 export async function resolveScannerOrigin(): Promise<ScannerOrigin | null> {
@@ -157,6 +138,16 @@ export function attachRealtime(httpServer: HttpServer) {
   });
 
   const windows = new Map<string, { count: number; startedAt: number }>();
+
+  io.use((socket, next) => {
+    const user = sessionFromCookie(socket.handshake.headers.cookie);
+    if (!user) {
+      next(new Error('Authentication required'));
+      return;
+    }
+    socket.data.user = user;
+    next();
+  });
 
   io.on('connection', (socket) => {
     socket.emit('scan:log', makeLog('success', 'Realtime scanning channel connected'));

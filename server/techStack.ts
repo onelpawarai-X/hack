@@ -12,6 +12,7 @@ interface DetectionInput {
   html?: string;
   portScan?: PortScanReport | null;
   waf?: WafDetectionResult | null;
+  cpes?: string[];
 }
 
 const SERVER_SIGNATURES: Array<{
@@ -117,16 +118,114 @@ function pushUnique(
   category: TechFingerprint['category'],
   confidence: TechFingerprint['confidence'],
   evidence: string,
+  version?: string,
+  cpe?: string,
 ) {
   const existing = list.find((item) => item.name === name);
   if (existing) {
+    if (!existing.version && version) existing.version = version;
+    if (!existing.cpe && cpe) existing.cpe = cpe;
     if (existing.confidence !== 'High' && confidence === 'High') {
       existing.confidence = 'High';
       existing.evidence = evidence;
     }
     return;
   }
-  list.push({ name, category, confidence, evidence });
+  list.push({ name, category, confidence, evidence, version, cpe });
+}
+
+function extractVersion(value: string): string | undefined {
+  const match = value.match(/(?:^|[/_\s-])v?(\d+\.\d+(?:\.\d+){0,2})/i);
+  return match?.[1];
+}
+
+interface CpeParts {
+  vendor: string;
+  product: string;
+  version?: string;
+  raw: string;
+}
+
+const CPE_NAMES: Record<string, { name: string; category: TechFingerprint['category'] }> = {
+  'apache:http_server': { name: 'Apache HTTP Server', category: 'server' },
+  'nginx:nginx': { name: 'Nginx', category: 'server' },
+  'microsoft:iis': { name: 'Microsoft IIS', category: 'server' },
+  'openbsd:openssh': { name: 'OpenSSH', category: 'server' },
+  'php:php': { name: 'PHP', category: 'language' },
+  'wordpress:wordpress': { name: 'WordPress', category: 'framework' },
+  'drupal:drupal': { name: 'Drupal', category: 'framework' },
+  'joomla:joomla': { name: 'Joomla', category: 'framework' },
+  'apache:tomcat': { name: 'Apache Tomcat', category: 'server' },
+  'eclipse:jetty': { name: 'Jetty', category: 'server' },
+  'oracle:mysql': { name: 'MySQL', category: 'database' },
+  'mysql:mysql': { name: 'MySQL', category: 'database' },
+  'postgresql:postgresql': { name: 'PostgreSQL', category: 'database' },
+  'redis:redis': { name: 'Redis', category: 'database' },
+  'mariadb:mariadb': { name: 'MariaDB', category: 'database' },
+  'exim:exim': { name: 'Exim', category: 'server' },
+  'postfix:postfix': { name: 'Postfix', category: 'server' },
+  'caddy:caddy': { name: 'Caddy', category: 'server' },
+  'litespeed:litespeed': { name: 'LiteSpeed', category: 'server' },
+  'nodejs:node.js': { name: 'Node.js', category: 'language' },
+  'expressjs:express': { name: 'Express', category: 'framework' },
+  'rubyonrails:rails': { name: 'Ruby on Rails', category: 'framework' },
+  'djangoproject:django': { name: 'Django', category: 'framework' },
+  'cloudflare:cloudflare': { name: 'Cloudflare', category: 'cdn' },
+  'amazon:cloudfront': { name: 'Amazon CloudFront', category: 'cdn' },
+  'fastly:fastly': { name: 'Fastly', category: 'cdn' },
+};
+
+function parseCpe(value: string): CpeParts | null {
+  const raw = value.trim();
+  if (raw.startsWith('cpe:2.3:')) {
+    const parts = raw.split(':');
+    if (parts.length < 5) return null;
+    return {
+      vendor: parts[3].toLowerCase(),
+      product: parts[4].toLowerCase(),
+      version: parts[5] && parts[5] !== '*' ? parts[5] : undefined,
+      raw,
+    };
+  }
+  if (raw.startsWith('cpe:/')) {
+    const parts = raw.slice(5).split(':');
+    if (parts.length < 3) return null;
+    return {
+      vendor: parts[1].toLowerCase(),
+      product: parts[2].toLowerCase(),
+      version: parts[3] && parts[3] !== '*' ? parts[3] : undefined,
+      raw,
+    };
+  }
+  return null;
+}
+
+function cpeDisplay(parts: CpeParts): { name: string; category: TechFingerprint['category'] } {
+  return (
+    CPE_NAMES[`${parts.vendor}:${parts.product}`] ?? {
+      name: parts.product.replace(/[_-]+/g, ' '),
+      category: 'server',
+    }
+  );
+}
+
+function stackFromCpes(cpes: string[]): TechFingerprint[] {
+  const stack: TechFingerprint[] = [];
+  for (const raw of cpes) {
+    const parts = parseCpe(raw);
+    if (!parts) continue;
+    const display = cpeDisplay(parts);
+    pushUnique(
+      stack,
+      display.name,
+      display.category,
+      'Medium',
+      `CPE ${raw}`,
+      parts.version,
+      `${parts.vendor}:${parts.product}`,
+    );
+  }
+  return stack;
 }
 
 export function detectTechStack(input: DetectionInput): TechFingerprint[] {
@@ -137,14 +236,14 @@ export function detectTechStack(input: DetectionInput): TechFingerprint[] {
   const serverValue = input.serverHeader || headers.server || '';
   for (const sig of SERVER_SIGNATURES) {
     if (sig.match.test(serverValue)) {
-      pushUnique(stack, sig.name, sig.category, 'High', `Server header: ${serverValue}`);
+      pushUnique(stack, sig.name, sig.category, 'High', `Server header: ${serverValue}`, extractVersion(serverValue));
     }
   }
 
   const poweredValue = input.poweredBy || headers['x-powered-by'] || '';
   for (const sig of POWERED_BY_SIGNATURES) {
     if (sig.match.test(poweredValue)) {
-      pushUnique(stack, sig.name, sig.category, 'High', `X-Powered-By: ${poweredValue}`);
+      pushUnique(stack, sig.name, sig.category, 'High', `X-Powered-By: ${poweredValue}`, extractVersion(poweredValue));
     }
   }
 
@@ -171,7 +270,7 @@ export function detectTechStack(input: DetectionInput): TechFingerprint[] {
   for (const banner of input.portScan?.serviceFingerprint ?? []) {
     for (const sig of BANNER_SIGNATURES) {
       if (sig.match.test(banner)) {
-        pushUnique(stack, sig.name, sig.category, 'High', `Service banner: ${banner}`);
+        pushUnique(stack, sig.name, sig.category, 'High', `Service banner: ${banner}`, extractVersion(banner));
       }
     }
   }
@@ -183,6 +282,18 @@ export function detectTechStack(input: DetectionInput): TechFingerprint[] {
       'cdn',
       input.waf.confidence === 'High' ? 'High' : 'Medium',
       'WAF signature',
+    );
+  }
+
+  for (const fromCpe of stackFromCpes(input.cpes ?? [])) {
+    pushUnique(
+      stack,
+      fromCpe.name,
+      fromCpe.category,
+      fromCpe.confidence,
+      fromCpe.evidence,
+      fromCpe.version,
+      fromCpe.cpe,
     );
   }
 
@@ -207,22 +318,26 @@ function familyOf(value: string): string | null {
 }
 
 /**
- * Drop CVEs that explicitly target a different web server family than the one
- * actually observed. This prevents cross-product false positives such as an
- * Apache CVE being reported against a Heroku/Nginx host.
+ * Drop CVEs that explicitly target a different product or web server family
+ * than the one actually observed. CPE metadata is preferred; textual product
+ * names are used as a fallback.
  */
 export function filterContextualCves(
   cveDetails: CveDetailRecord[],
   stack: TechFingerprint[],
 ): { kept: CveDetailRecord[]; excluded: Array<{ cveId: string; reason: string }> } {
   const detectedFamilies = new Set<string>();
+  const detectedCpes = new Set<string>();
+  const detectedNames = new Set<string>();
+
   for (const item of stack) {
-    if (item.category !== 'server' && item.category !== 'platform') continue;
     const family = familyOf(item.name);
     if (family) detectedFamilies.add(family);
+    if (item.cpe) detectedCpes.add(item.cpe);
+    detectedNames.add(item.name.toLowerCase());
   }
 
-  if (detectedFamilies.size === 0) {
+  if (detectedFamilies.size === 0 && detectedCpes.size === 0 && detectedNames.size === 0) {
     return { kept: cveDetails, excluded: [] };
   }
 
@@ -230,26 +345,85 @@ export function filterContextualCves(
   const excluded: Array<{ cveId: string; reason: string }> = [];
 
   for (const cve of cveDetails) {
-    const families = new Set<string>();
+    const cveFamilies = new Set<string>();
+    const cveCpes = new Set<string>();
+    const cveProductLabels: string[] = [];
+    const cveNameMatches: string[] = [];
+    const cveVersions: string[] = [];
+
     for (const product of cve.affectedProducts) {
+      const parts = parseCpe(product);
+      if (parts) {
+        cveCpes.add(`${parts.vendor}:${parts.product}`);
+        cveProductLabels.push(`${parts.vendor}:${parts.product}`);
+        if (parts.version) cveVersions.push(parts.version);
+        const display = cpeDisplay(parts);
+        const family = familyOf(display.name) ?? familyOf(parts.product);
+        if (family) cveFamilies.add(family);
+        continue;
+      }
       const family = familyOf(product);
-      if (family) families.add(family);
+      if (family) cveFamilies.add(family);
+      const normalized = product.toLowerCase();
+      for (const name of detectedNames) {
+        if (normalized.includes(name) || name.includes(normalized)) {
+          cveProductLabels.push(product);
+          cveNameMatches.push(product);
+        }
+      }
     }
 
-    if (families.size === 0) {
-      kept.push(cve);
+    const cpeMatch = [...cveCpes].find((key) => detectedCpes.has(key));
+    if (cpeMatch) {
+      const detected = stack.find((item) => item.cpe === cpeMatch);
+      kept.push({
+        ...cve,
+        stackMatch: {
+          confidence: 'High',
+          reason: `CPE ${cpeMatch} matches detected ${detected?.name ?? 'component'}${detected?.version ? ` ${detected.version}` : ''}.`,
+        },
+      });
       continue;
     }
 
-    const matchesDetected = [...families].some((family) => detectedFamilies.has(family));
-    if (matchesDetected) {
-      kept.push(cve);
+    if (cveNameMatches.length > 0) {
+      kept.push({
+        ...cve,
+        stackMatch: {
+          confidence: 'Medium',
+          reason: `Affected product text matches detected stack: ${cveNameMatches.slice(0, 3).join(', ')}.`,
+        },
+      });
+      continue;
+    }
+
+    const familyMatch = [...cveFamilies].find((family) => detectedFamilies.has(family));
+    if (familyMatch) {
+      const versions = cveVersions.length ? ` CVE versions: ${Array.from(new Set(cveVersions)).slice(0, 4).join(', ')}.` : '';
+      kept.push({
+        ...cve,
+        stackMatch: {
+          confidence: 'Medium',
+          reason: `Affected product family (${familyMatch}) matches the observed stack.${versions}`,
+        },
+      });
+      continue;
+    }
+
+    if (cveCpes.size === 0 && cveFamilies.size === 0) {
+      kept.push({
+        ...cve,
+        stackMatch: {
+          confidence: 'Low',
+          reason: 'CVE feed did not include a machine-readable product or family; kept for analyst review.',
+        },
+      });
       continue;
     }
 
     excluded.push({
       cveId: cve.cveId,
-      reason: `Affected product family (${[...families].join(', ')}) does not match observed server stack (${[...detectedFamilies].join(', ')}).`,
+      reason: `Affected products (${cveProductLabels.slice(0, 3).join(', ') || [...cveCpes, ...cveFamilies].join(', ')}) do not match observed stack (${[...detectedCpes, ...detectedFamilies].join(', ')}).`,
     });
   }
 

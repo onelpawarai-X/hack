@@ -1,3 +1,4 @@
+import { resolve4, resolve6, resolveCaa, resolveMx, resolveNs, resolvePtr, resolveTxt } from 'node:dns/promises';
 import type {
   ActiveVulnFinding,
   BgpRouteProfile,
@@ -80,40 +81,30 @@ export interface ScanModulePlugin {
   run: (ctx: ScanExecutionContext) => Promise<void>;
 }
 
-export async function fetchJsonWithTimeout<T>(url: string, timeoutMs = 5500): Promise<T | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        Accept: 'application/json, application/rdap+json, */*',
-        'User-Agent': 'SentinelGlobe-OSINT/1.0',
-      },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function resolveDnsRecord(
   name: string,
   type: 'A' | 'AAAA' | 'MX' | 'NS' | 'TXT' | 'PTR' | 'CAA',
 ): Promise<string[]> {
-  const json = await fetchJsonWithTimeout<{ Answer?: Array<{ data?: string }> }>(
-    `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${type}`,
-    5000,
-  );
-  if (!json || !Array.isArray(json.Answer)) return [];
-  return json.Answer.map((a) =>
-    String(a.data ?? '')
-      .replace(/^"|"$/g, '')
-      .replace(/\.$/, '')
-      .trim(),
-  ).filter(Boolean);
+  try {
+    if (type === 'A') return await resolve4(name);
+    if (type === 'AAAA') return await resolve6(name);
+    if (type === 'MX') {
+      return (await resolveMx(name)).map((record) => `${record.priority} ${record.exchange}`);
+    }
+    if (type === 'NS') return await resolveNs(name);
+    if (type === 'TXT') {
+      return (await resolveTxt(name)).map((parts) => parts.join(''));
+    }
+    if (type === 'PTR') return await resolvePtr(name);
+    if (type === 'CAA') {
+      return (await resolveCaa(name)).map((record) =>
+        [record.critical ? 'critical' : '', record.issue, record.iodef, record.contactemail, record.contactphone]
+          .filter(Boolean)
+          .join(' '),
+      );
+    }
+    return [];
+  } catch {
+    return [];
+  }
 }

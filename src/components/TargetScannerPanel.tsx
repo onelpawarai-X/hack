@@ -3,7 +3,9 @@ import {
   Archive,
   CheckCircle2,
   Crosshair,
+  Download,
   ExternalLink,
+  FileJson,
   Globe,
   Loader2,
   Lock,
@@ -17,6 +19,18 @@ import { useState, type FormEvent } from 'react';
 import type { CyberTranslations } from '../i18n/cyberTranslations';
 import type { Language, TargetScanResult, ThreatNode } from '../types/cyber';
 import { formatShortDate, formatUtcTimestamp } from '../utils/formatters';
+import { downloadScanJson, downloadScanPdf } from '../utils/reportExport';
+
+const RISK_BADGE_CLASS: Record<string, string> = {
+  Critical: 'border-red-500/40 bg-red-500/10 text-red-300',
+  High: 'border-orange-500/40 bg-orange-500/10 text-orange-300',
+  Medium: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+  Low: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
+  Info: 'border-slate-500/40 bg-slate-500/10 text-slate-300',
+};
+
+const scoreTone = (score: number) =>
+  score >= 70 ? 'text-red-400' : score >= 50 ? 'text-orange-400' : score >= 30 ? 'text-amber-300' : 'text-emerald-400';
 
 interface TargetScannerPanelProps {
   t: CyberTranslations;
@@ -50,6 +64,7 @@ export function TargetScannerPanel({
   sampleAttackerIp,
 }: TargetScannerPanelProps) {
   const [input, setInput] = useState('');
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -247,7 +262,179 @@ export function TargetScannerPanel({
             )}
           </div>
 
-          {/* MITRE CVE 5.2 Deep Records (when scanning CVE-* or when host exposes Shodan CVEs) */}
+          {scanResult.riskScore && (
+            <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 space-y-3">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400">
+                    {t.scanner.riskScoreTitle}
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className={`text-3xl font-black tabular-nums ${scoreTone(scanResult.riskScore.score)}`}>
+                      {scanResult.riskScore.score}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      {t.scanner.riskScoreOutOf} · {t.scanner.riskScoreGrade}{' '}
+                      <strong className={scoreTone(scanResult.riskScore.score)}>
+                        {scanResult.riskScore.grade}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {scanResult.riskScore.components.map((component) => (
+                    <span
+                      key={component.severity}
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-mono font-semibold ${RISK_BADGE_CLASS[component.severity] ?? RISK_BADGE_CLASS.Info}`}
+                    >
+                      {component.severity} ×{component.count} = {component.points}
+                    </span>
+                  ))}
+                  {scanResult.riskScore.components.length === 0 && (
+                    <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                      {t.scanner.findingsEmpty}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <p className="text-[10px] leading-relaxed text-slate-500">
+                {t.scanner.riskScoreFormula}
+                {scanResult.riskScore.verdictFloor > 0 && (
+                  <>
+                    {' '}
+                    {lang === 'bn' ? 'ভের্ডিক্ট ফ্লোর' : 'Verdict floor'}:{' '}
+                    {scanResult.riskScore.verdictFloor}.
+                  </>
+                )}
+                {scanResult.riskScore.capped && (
+                  <>
+                    {' '}
+                    {lang === 'bn'
+                      ? 'কাঁচা পয়েন্ট ১০০ ছাড়িয়েছে, তাই ১০০-এ ক্যাপ করা হয়েছে।'
+                      : 'Raw points exceeded 100 and were capped.'}
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="text-xs font-semibold text-slate-200">{t.scanner.coverageTitle}</h4>
+              <span
+                className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                  scanResult.ownershipVerified
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                }`}
+              >
+                {scanResult.ownershipVerified
+                  ? t.scanner.coverageOwnershipVerified
+                  : t.scanner.coverageOwnershipPending}
+              </span>
+              <div className="ml-auto flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => downloadScanJson(scanResult, lang)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/20 cursor-pointer"
+                >
+                  <FileJson className="w-3.5 h-3.5" aria-hidden="true" />
+                  {t.scanner.exportJson}
+                </button>
+                <button
+                  type="button"
+                  disabled={exportingPdf}
+                  onClick={() => {
+                    setExportingPdf(true);
+                    void downloadScanPdf(scanResult).finally(() => setExportingPdf(false));
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-fuchsia-200 hover:bg-fuchsia-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                  {t.scanner.exportPdf}
+                </button>
+              </div>
+            </div>
+            <div className="text-[10px] leading-relaxed text-slate-400">
+              <span className="text-slate-500">{t.scanner.coverageExecuted}: </span>
+              {(scanResult.executedModules ?? []).length > 0 ? (
+                <span className="font-mono text-emerald-300">
+                  {(scanResult.executedModules ?? [])
+                    .map((id) => id.replace(/([A-Z])/g, ' $1').trim())
+                    .join(' · ')}
+                </span>
+              ) : (
+                <span className="text-slate-500">—</span>
+              )}
+            </div>
+            <div className="text-[10px] leading-relaxed text-slate-400">
+              <span className="text-slate-500">{t.scanner.coverageSkipped}: </span>
+              {scanResult.skippedActiveModules && scanResult.skippedActiveModules.length > 0 ? (
+                <span className="text-amber-300">
+                  {scanResult.skippedActiveModules
+                    .map((item) => `${item.moduleId}: ${item.reason}`)
+                    .join(' · ')}
+                </span>
+              ) : (
+                <span className="text-emerald-300">{t.scanner.coverageNoSkipped}</span>
+              )}
+            </div>
+            <p className="text-[9px] text-slate-500">{t.scanner.exportPdfNote}</p>
+          </div>
+
+          {scanResult.findings && scanResult.findings.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-300" aria-hidden="true" />
+                <span>
+                  {t.scanner.findingsTitle} ({scanResult.findings.length})
+                </span>
+              </h4>
+              <div className="max-h-96 space-y-2 overflow-y-auto pr-1">
+                {scanResult.findings.map((finding) => (
+                  <details
+                    key={finding.id}
+                    className="rounded-lg border border-slate-800 bg-slate-950/50"
+                  >
+                    <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2 text-xs">
+                      <span
+                        className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${RISK_BADGE_CLASS[finding.riskLevel] ?? RISK_BADGE_CLASS.Info}`}
+                      >
+                        {finding.riskLevel}
+                      </span>
+                      <span className="font-semibold text-slate-100">{finding.title}</span>
+                      <span className="ml-auto font-mono text-[10px] text-slate-500">
+                        {[finding.owaspId, finding.cwe].filter(Boolean).join(' · ')}
+                      </span>
+                    </summary>
+                    <div className="space-y-2 border-t border-slate-800/80 px-3 py-2 text-xs">
+                      <p className="leading-relaxed text-slate-300">{finding.description}</p>
+                      {finding.evidence && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                            {t.scanner.findingEvidence}
+                          </div>
+                          <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-black/40 p-2 font-mono text-[10px] text-amber-200">
+                            {finding.evidence}
+                          </pre>
+                        </div>
+                      )}
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                          {t.scanner.findingRemediation}
+                        </div>
+                        <p className="mt-1 leading-relaxed text-emerald-200/90">
+                          {finding.remediation}
+                        </p>
+                      </div>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Offline MITRE CVE 5.2 records (when scanning CVE-* or a local CVE mirror is loaded) */}
           {scanResult.cveDetails && scanResult.cveDetails.length > 0 && (
             <div className="space-y-3 pb-4 border-b border-slate-800/80 text-xs">
               <h4 className="font-semibold text-amber-300 flex items-center gap-1.5">
@@ -298,6 +485,12 @@ export function TargetScannerPanel({
                         {cve.description}
                       </p>
                     )}
+                    {cve.stackMatch && (
+                      <div className="text-[11px] text-cyan-300">
+                        <span className="font-semibold">{cve.stackMatch.confidence} stack match:</span>{' '}
+                        {cve.stackMatch.reason}
+                      </div>
+                    )}
                     {cve.affectedProducts.length > 0 && (
                       <div className="font-mono text-[11px] text-sky-300">
                         Affected: {cve.affectedProducts.join(' · ')}
@@ -333,7 +526,7 @@ export function TargetScannerPanel({
           {/* 3-Column Deep Technical OSINT Dossier */}
           {scanResult.targetType !== 'cve' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-0 lg:divide-x divide-slate-800/80 text-xs">
-              {/* Column 1: Geolocation + RIPEstat BGP Routing + Shodan Exposure */}
+              {/* Column 1: Geolocation + Team Cymru BGP Routing + native exposure */}
               <div className="lg:pr-5 space-y-4">
                 <div className="space-y-2">
                   <h4 className="font-semibold text-slate-200 flex items-center gap-1.5">
@@ -593,6 +786,26 @@ export function TargetScannerPanel({
                         <span className="font-mono">
                           {scanResult.httpAudit.cookieIssues.slice(0, 4).join(' · ')}
                         </span>
+                      </div>
+                    )}
+                    {scanResult.httpAudit.cors &&
+                      (scanResult.httpAudit.cors.allowOrigin ||
+                        scanResult.httpAudit.cors.allowCredentials) && (
+                        <div
+                          className={
+                            scanResult.httpAudit.cors.risky
+                              ? 'font-mono text-red-300'
+                              : 'font-mono text-slate-400'
+                          }
+                        >
+                          CORS: origin={scanResult.httpAudit.cors.allowOrigin ?? 'none'} ·
+                          credentials={String(scanResult.httpAudit.cors.allowCredentials)}
+                          {scanResult.httpAudit.cors.risky ? ' · RISKY' : ''}
+                        </div>
+                      )}
+                    {(scanResult.httpAudit.httpMethods?.length ?? 0) > 0 && (
+                      <div className="font-mono text-slate-400">
+                        Allow: {scanResult.httpAudit.httpMethods?.join(', ')}
                       </div>
                     )}
                   </div>

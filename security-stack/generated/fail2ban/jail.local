@@ -1,0 +1,46 @@
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+backend = auto
+ignoreip = 127.0.0.1/8 ::1
+
+[sshd]
+enabled = true
+port = ssh
+logpath = /var/log/auth.log
+maxretry = 3
+
+[nginx-http-auth]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+
+[nginx-botsearch]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/access.log
+
+[cowrie]
+enabled = true
+port = 2222,2223
+filter = cowrie
+logpath = /var/log/cowrie/cowrie.json
+maxretry = 3
+bantime = 86400
+
+[suricata-fast]
+enabled = true
+filter = suricata-fast
+logpath = /var/log/suricata/fast.log
+maxretry = 1
+bantime = 86400
+
+[recidive]
+enabled = true
+filter = recidive
+logpath = /var/log/fail2ban.log
+action = iptables-allports[name=recidive]
+bantime = 604800
+findtime = 86400
+maxretry = 3

@@ -395,7 +395,7 @@ export function extractEmbeddedStrings(
 export async function reverseGeocodeAddress(
   lat: number,
   lon: number,
-  zoom = 18,
+  _zoom = 18,
 ): Promise<{
   displayAddress?: string;
   city?: string;
@@ -404,51 +404,9 @@ export async function reverseGeocodeAddress(
   postal?: string;
 } | null> {
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
-        lat,
-      )}&lon=${encodeURIComponent(lon)}&zoom=${zoom}&addressdetails=1`;
-      const res = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'SentinelGlobe-ThreatMonitor/1.0 (defensive-forensics)',
-          Accept: 'application/json',
-        },
-      });
-      if (!res.ok) return null;
-      const json = (await res.json()) as {
-        display_name?: string;
-        address?: {
-          city?: string;
-          town?: string;
-          village?: string;
-          state?: string;
-          country?: string;
-          country_code?: string;
-          postcode?: string;
-        };
-      };
-      return {
-        displayAddress: json.display_name || undefined,
-        city:
-          json.address?.city ||
-          json.address?.town ||
-          json.address?.village ||
-          json.address?.state ||
-          undefined,
-        country: json.address?.country || undefined,
-        countryCode: json.address?.country_code?.toUpperCase() || undefined,
-        postal: json.address?.postcode || undefined,
-      };
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return null;
-  }
+  return {
+    displayAddress: `${lat.toFixed(5)}, ${lon.toFixed(5)} (offline coordinate; no reverse-geocode API)`,
+  };
 }
 
 function formatTagValue(val: unknown): string {

@@ -7,8 +7,10 @@ import type {
   DefenseStateSnapshot,
   ProtectedSystemShield,
   TargetScanResult,
+  ThreatSeverity,
 } from '../src/types/cyber.ts';
 import { scanTargetOrWeb, traceAttackerIp } from './scanner.ts';
+import { lookupAsn, lookupWhoisDomain, lookupWhoisIp } from './nativeIntel.ts';
 import { isValidIpv4 } from './threatRules.ts';
 
 const STATE_FILE_PATH = path.resolve(process.cwd(), '.sentinel-defense-state.json');
@@ -141,91 +143,19 @@ export async function lookupRdapIpAbuse(ip: string): Promise<{
   abuseEmails: string[];
 }> {
   if (!isValidIpv4(ip)) return { abuseEmails: [] };
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6500);
-    try {
-      const res = await fetch(`https://rdap-bootstrap.arin.net/bootstrap/ip/${encodeURIComponent(ip)}`, {
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: {
-          Accept: 'application/rdap+json, application/json',
-          'User-Agent': 'SentinelGlobe-DefenseEngine/1.0',
-        },
-      });
-      if (!res.ok) return { abuseEmails: [] };
-      const json = (await res.json()) as {
-        handle?: string;
-        startAddress?: string;
-        endAddress?: string;
-        cidr0_cidrs?: Array<{ v4prefix?: string; length?: number }>;
-      };
-      const rawStr = JSON.stringify(json);
-      const emailMatches = rawStr.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? [];
-      const sortedEmails = Array.from(new Set(emailMatches.map((e) => e.toLowerCase()))).sort(
-        (a, b) => {
-          const aAbuse = a.includes('abuse') || a.includes('security') ? 0 : 1;
-          const bAbuse = b.includes('abuse') || b.includes('security') ? 0 : 1;
-          return aAbuse - bAbuse;
-        },
-      );
-      const cidrObj = json.cidr0_cidrs?.[0];
-      const cidr =
-        cidrObj?.v4prefix && typeof cidrObj.length === 'number'
-          ? `${cidrObj.v4prefix}/${cidrObj.length}`
-          : json.startAddress && json.endAddress
-            ? `${json.startAddress} - ${json.endAddress}`
-            : undefined;
-
-      return {
-        cidr,
-        handle: json.handle,
-        abuseEmails: sortedEmails.slice(0, 5),
-      };
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return { abuseEmails: [] };
-  }
+  const asn = await lookupAsn(ip).catch(() => null);
+  const whois = await lookupWhoisIp(ip, asn?.registry).catch(() => null);
+  if (!whois) return { abuseEmails: [] };
+  return {
+    cidr: whois.cidr ?? asn?.prefix,
+    handle: whois.handle ?? whois.orgName,
+    abuseEmails: whois.abuseEmails.slice(0, 5),
+  };
 }
 
 export async function lookupRdapDomainAbuse(domain: string): Promise<string[]> {
-  try {
-    const clean = domain.toLowerCase().replace(/^www\./, '');
-    const tld = clean.split('.').pop() || '';
-    const rdapUrl =
-      tld === 'com' || tld === 'net'
-        ? `https://rdap.verisign.com/${tld}/v1/domain/${encodeURIComponent(clean)}`
-        : `https://rdap.org/domain/${encodeURIComponent(clean)}`;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5500);
-    try {
-      const res = await fetch(rdapUrl, {
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: {
-          Accept: 'application/rdap+json, application/json',
-          'User-Agent': 'SentinelGlobe-DefenseEngine/1.0',
-        },
-      });
-      if (!res.ok) return [];
-      const raw = await res.text();
-      const emails = raw.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? [];
-      return Array.from(new Set(emails.map((e) => e.toLowerCase())))
-        .sort((a, b) => {
-          const aAbuse = a.includes('abuse') ? 0 : 1;
-          const bAbuse = b.includes('abuse') ? 0 : 1;
-          return aAbuse - bAbuse;
-        })
-        .slice(0, 5);
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch {
-    return [];
-  }
+  const whois = await lookupWhoisDomain(domain).catch(() => null);
+  return whois?.abuseEmails.slice(0, 5) ?? [];
 }
 
 class DefenseEngine {
@@ -233,6 +163,7 @@ class DefenseEngine {
   private blockedDomains = new Map<string, BlockedDomainEntry>();
   private protectedShields = new Map<string, ProtectedSystemShield>();
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private blockListeners = new Set<(entry: BlockedIpEntry) => void>();
 
   constructor() {
     this.loadFromDisk();
@@ -277,6 +208,11 @@ class DefenseEngine {
     }, 120_000);
   }
 
+  onBlock(listener: (entry: BlockedIpEntry) => void): () => void {
+    this.blockListeners.add(listener);
+    return () => this.blockListeners.delete(listener);
+  }
+
   isIpBlocked(ip: string): boolean {
     return this.blockedIps.has(ip);
   }
@@ -318,7 +254,11 @@ class DefenseEngine {
     };
   }
 
-  async defendAttackerIp(ip: string, reason?: string): Promise<BlockedIpEntry> {
+  async defendAttackerIp(
+    ip: string,
+    reason?: string,
+    severity?: ThreatSeverity,
+  ): Promise<BlockedIpEntry> {
     const cleanIp = ip.trim();
     const [trace, rdap] = await Promise.all([
       traceAttackerIp(cleanIp).catch(() => null),
@@ -334,7 +274,8 @@ class DefenseEngine {
         reason?.trim() ||
         trace?.threatType ||
         'Blocked by SentinelGlobe Active Defense Shield',
-      severity: trace?.severity ?? 'HIGH',
+      severity:
+        severity ?? (trace?.severity && trace.severity !== 'CLEAN' ? trace.severity : 'HIGH'),
       country: trace?.country,
       city: trace?.city,
       physicalAddress: trace?.physicalAddress,
@@ -350,6 +291,13 @@ class DefenseEngine {
 
     this.blockedIps.set(cleanIp, entry);
     this.saveToDisk();
+    for (const listener of this.blockListeners) {
+      try {
+        listener(entry);
+      } catch {
+        // A downstream integration must not break the block itself.
+      }
+    }
     return entry;
   }
 
@@ -410,12 +358,6 @@ class DefenseEngine {
       abuseEmails: allAbuseEmails,
       hostsEntry: `0.0.0.0 ${domain}`,
       piholeRule: `||${domain}^`,
-      safeBrowsingUrl: `https://safebrowsing.google.com/safebrowsing/report_phish/?url=${encodeURIComponent(
-        fullUrl || `https://${domain}`,
-      )}`,
-      netcraftReportUrl: `https://report.netcraft.com/report?url=${encodeURIComponent(
-        fullUrl || `https://${domain}`,
-      )}`,
     };
 
     this.blockedDomains.set(domain, entry);

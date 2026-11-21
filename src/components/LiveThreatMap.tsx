@@ -1,10 +1,11 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Crosshair, Flame, Maximize2, Radar, ZoomIn, ZoomOut } from 'lucide-react';
+import { Crosshair, Flame, Globe2, Maximize2, Radar, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LabTranslations } from '../i18n/labTranslations';
 import type { TargetScanResult, ThreatNode, ThreatSeverity } from '../types/cyber';
 import type { ScanGeoPayload, ScannerOrigin } from '../types/realtime';
+import { ThreatGlobe3D } from './ThreatGlobe3D';
 
 interface LiveThreatMapProps {
   t: LabTranslations;
@@ -103,6 +104,7 @@ export function LiveThreatMap({
   const didInitialFitRef = useRef(false);
   const lastFocusedTargetRef = useRef<string | null>(null);
   const [heatEnabled, setHeatEnabled] = useState(true);
+  const [view3d, setView3d] = useState(false);
 
   const blockedSet = useMemo(() => new Set(blockedIps), [blockedIps]);
 
@@ -330,6 +332,19 @@ export function LiveThreatMap({
         <div className="flex items-center gap-1.5">
           <button
             type="button"
+            onClick={() => setView3d((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer ${
+              view3d
+                ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200'
+                : 'bg-[#06090F] border-slate-700 text-slate-300 hover:border-slate-500'
+            }`}
+            aria-pressed={view3d}
+          >
+            <Globe2 className="w-3.5 h-3.5" aria-hidden="true" />
+            {view3d ? '3D' : '3D'}
+          </button>
+          <button
+            type="button"
             onClick={() => setHeatEnabled((prev) => !prev)}
             className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer ${
               heatEnabled
@@ -413,8 +428,18 @@ export function LiveThreatMap({
           )}
         </div>
 
+        {view3d && (
+          <div className="absolute inset-0 z-[1200] bg-[#02060c]">
+            <ThreatGlobe3D
+              nodes={attributionNodes}
+              scannerOrigin={scannerOrigin}
+              onSelectNode={onSelectNode}
+            />
+          </div>
+        )}
+
         {loading && (
-          <div className="absolute inset-0 z-[1100] grid place-items-center bg-[#06090F]/70 backdrop-blur-sm text-xs text-slate-300">
+          <div className="absolute inset-0 z-[1300] grid place-items-center bg-[#06090F]/70 backdrop-blur-sm text-xs text-slate-300">
             {t.mapLoading}
           </div>
         )}

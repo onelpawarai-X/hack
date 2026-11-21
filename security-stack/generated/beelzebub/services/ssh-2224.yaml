@@ -1,0 +1,11 @@
+apiVersion: "v1"
+protocol: "ssh"
+address: ":2224"
+description: "SentinelGlobe SSH deception"
+commands:
+  - regex: "^(.+)$"
+    handler: "DecoyShell"
+serverVersion: "OpenSSH_9.6p1"
+serverName: "ubuntu"
+passwordRegex: "^(root|admin|ubuntu|123456|password|toor)$"
+deadlineTimeoutSeconds: 600

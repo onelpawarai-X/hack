@@ -1,0 +1,11 @@
+apiVersion: "v1"
+protocol: "http"
+address: ":8082"
+description: "SentinelGlobe HTTP deception"
+commands:
+  - regex: ".*"
+    handler: "Unauthorized"
+    headers:
+      - "www-Authenticate: Basic"
+      - "server: Apache/2.4.58 (Ubuntu)"
+    statusCode: 401

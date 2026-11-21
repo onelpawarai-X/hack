@@ -1,0 +1,18 @@
+core:
+  logging:
+    debug: false
+    debugReportCaller: false
+    logDisableTimestamp: false
+    logsPath: /var/log/beelzebub/beelzebub.log
+  tracings:
+    rabbit-mq:
+      enabled: false
+      uri: ""
+  prometheus:
+    enabled: false
+    path: "/metrics"
+    port: ":2112"
+  beelzebub-cloud:
+    enabled: false
+    uri: ""
+    auth-token: ""

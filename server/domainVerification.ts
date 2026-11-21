@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { resolveTxt } from 'node:dns/promises';
 import type { DomainVerificationStatus } from '../src/types/cyber.ts';
 import { extractRootDomain } from './osintParsers.ts';
 import { assertSafePublicUrl } from './ssrfGuard.ts';
@@ -124,7 +125,7 @@ class DomainVerificationStore {
     if (method === 'dns-txt') {
       const hostsToCheck = [`_sentinelglobe-verify.${domain}`, domain];
       for (const queryHost of hostsToCheck) {
-        const txtRecords = await queryDohTxt(queryHost);
+        const txtRecords = await queryTxt(queryHost);
         if (matchesTxtVerificationToken(txtRecords, expectedToken)) {
           this.markVerified(domain, 'dns-txt');
           return this.getStatus(domain);
@@ -180,25 +181,11 @@ class DomainVerificationStore {
   }
 }
 
-async function queryDohTxt(name: string): Promise<string[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
+async function queryTxt(name: string): Promise<string[]> {
   try {
-    const res = await fetch(
-      `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=TXT`,
-      {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      },
-    );
-    if (!res.ok) return [];
-    const json = (await res.json()) as { Answer?: Array<{ data?: string }> };
-    if (!Array.isArray(json.Answer)) return [];
-    return json.Answer.map((a) => String(a.data ?? '').replace(/^"|"$/g, '').trim()).filter(Boolean);
+    return (await resolveTxt(name)).map((parts) => parts.join(''));
   } catch {
     return [];
-  } finally {
-    clearTimeout(timer);
   }
 }
 

@@ -718,24 +718,15 @@ export function ThreatFeedsMatrix({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <a
-                        href={dom.safeBrowsingUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold"
-                      >
-                        <span>{t.defense.reportSafeBrowsingBtn}</span>
-                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                      </a>
-                      <a
-                        href={dom.netcraftReportUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 hover:border-slate-500 text-slate-200"
-                      >
-                        <span>{t.defense.reportNetcraftBtn}</span>
-                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                      </a>
+                      {dom.abuseEmails.length > 0 && (
+                        <a
+                          href={`mailto:${dom.abuseEmails.join(',')}?subject=${encodeURIComponent(`Abuse report: ${dom.domain}`)}&body=${encodeURIComponent(`Phishing/malicious domain: ${dom.domain}\nResolved IPs: ${dom.resolvedIps.join(', ') || 'unknown'}\nReason: ${dom.reason}\nPlease suspend the offending infrastructure.`)}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold"
+                        >
+                          <span>{t.defense.reportAbuseEmailBtn}</span>
+                          <Mail className="w-3 h-3" aria-hidden="true" />
+                        </a>
+                      )}
                       <button
                         type="button"
                         onClick={() => onRemoveSinkhole(dom.domain)}
@@ -773,7 +764,7 @@ export function ThreatFeedsMatrix({
                   },
                   {
                     key: 'cloudflare',
-                    title: 'Cloudflare WAF Expression',
+                    title: 'Local edge deny expression',
                     code: defenseState.globalFirewallBundle.cloudflareWafExpr,
                   },
                   {
