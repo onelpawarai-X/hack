@@ -6,5 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+.sentinel/
 .sentinel-defense-state.json
 .sentinel-sensor-state.json
+
+security-stack/logs/
+data/sentinel.db*
+data/enforcement/

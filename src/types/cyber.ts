@@ -36,6 +36,7 @@ export interface ThreatNode {
   knownVulns?: string[];
   cpes?: string[];
   shodanTags?: string[];
+  localTags?: string[];
   abuseEmails?: string[];
   cidr?: string;
   defended?: boolean;
@@ -119,6 +120,10 @@ export interface CveDetailRecord {
   affectedProducts: string[];
   publishedDate?: string;
   references: string[];
+  stackMatch?: {
+    confidence: 'High' | 'Medium' | 'Low';
+    reason: string;
+  };
 }
 
 export interface RdapDomainProfile {
@@ -180,6 +185,8 @@ export interface TechFingerprint {
   category: 'server' | 'framework' | 'platform' | 'cdn' | 'language' | 'database';
   confidence: 'High' | 'Medium' | 'Low';
   evidence: string;
+  version?: string;
+  cpe?: string;
 }
 
 export type RiskLevel = 'Critical' | 'High' | 'Medium' | 'Low' | 'Info';
@@ -301,8 +308,26 @@ export interface TargetScanResult {
     headers: Record<string, string>;
     missingSecurityHeaders: string[];
     cookieIssues: string[];
+    cookieAudit?: Array<{
+      name: string;
+      category: 'session' | 'tracking' | 'preference' | 'unknown';
+      missing: string[];
+      severity: RiskLevel;
+      hasExpiry: boolean;
+      secure: boolean;
+      httpOnly: boolean;
+      sameSite?: string;
+    }>;
     securityTxtFound: boolean;
     robotsTxtFound?: boolean;
+    cors?: {
+      allowOrigin?: string;
+      allowCredentials: boolean;
+      allowMethods?: string;
+      reflective: boolean;
+      risky: boolean;
+    };
+    httpMethods?: string[];
     error?: string;
   } | null;
   discoveredSubdomains?: string[];
@@ -324,6 +349,23 @@ export interface TargetScanResult {
   activeVulns?: ActiveVulnFinding[];
   findings?: SecurityFinding[];
   riskCounts?: Record<RiskLevel, number>;
+  riskScore?: RiskScoreBreakdown;
+}
+
+export interface RiskScoreComponent {
+  severity: RiskLevel;
+  count: number;
+  weight: number;
+  points: number;
+}
+
+export interface RiskScoreBreakdown {
+  score: number;
+  grade: 'A' | 'B' | 'C' | 'D' | 'F';
+  rawPoints: number;
+  verdictFloor: number;
+  capped: boolean;
+  components: RiskScoreComponent[];
 }
 
 export interface ImageForensicsResult {
@@ -441,8 +483,6 @@ export interface BlockedDomainEntry {
   abuseEmails: string[];
   hostsEntry: string;
   piholeRule: string;
-  safeBrowsingUrl: string;
-  netcraftReportUrl: string;
 }
 
 export interface ProtectedSystemShield {

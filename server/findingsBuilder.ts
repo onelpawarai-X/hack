@@ -4,6 +4,7 @@ import type {
   PortScanReport,
   RemediationSnippets,
   RiskLevel,
+  RiskScoreBreakdown,
   SecurityFinding,
   SensitivePathFinding,
   TargetScanResult,
@@ -13,6 +14,31 @@ import type {
 
 export const ETHICAL_LEGAL_DISCLAIMER =
   'For authorized security testing only. Misuse is strictly prohibited.';
+
+function detectManagedGoogleEdge(input: {
+  httpAudit: TargetScanResult['httpAudit'];
+  attribution: TargetScanResult['attribution'];
+}): { managed: boolean; reason?: string } {
+  const server = String(
+    input.httpAudit?.server || input.httpAudit?.headers?.server || '',
+  ).toLowerCase();
+  if (/(^|[\s/])gws([\s/]|$)/.test(server) || server.includes('google')) {
+    return { managed: true, reason: `Server header: ${server || 'gws'}` };
+  }
+  const googleHost = input.attribution.find(
+    (node) =>
+      /^AS15169$/i.test(node.asn) ||
+      /google/i.test(node.isp || '') ||
+      /google/i.test(node.org || ''),
+  );
+  if (googleHost) {
+    return {
+      managed: true,
+      reason: `${googleHost.asn || 'Google ASN'} · ${googleHost.isp || googleHost.org || 'Google'}`,
+    };
+  }
+  return { managed: false };
+}
 
 export function getHeaderFixSnippets(headerName: string): RemediationSnippets {
   const key = headerName.toLowerCase();
@@ -211,7 +237,7 @@ export function buildCategorizedFindings(input: {
       owaspCategory: 'A05:2021 - Security Misconfiguration',
       owaspId: 'A05:2021',
       evidence: input.techStack
-        .map((item) => `${item.name} [${item.category}, ${item.confidence}]`)
+        .map((item) => `${item.name}${item.version ? ` ${item.version}` : ''} [${item.category}, ${item.confidence}${item.cpe ? `, ${item.cpe}` : ''}]`)
         .join('; '),
       remediation:
         'Keep each detected component patched and remove version banners from public responses.',
@@ -271,47 +297,143 @@ export function buildCategorizedFindings(input: {
     }
   }
 
-  // 4. HTTP Security Headers -> Exact Nginx/Apache/Cloudflare snippets
+  // 4. HTTP Security Headers -> context-aware risk, exact Nginx/Apache/Cloudflare snippets
   if (input.httpAudit && !input.httpAudit.error) {
+    const edge = detectManagedGoogleEdge(input);
     for (const h of input.httpAudit.missingSecurityHeaders) {
       const lower = h.toLowerCase();
-      const isMedium =
+      const isCore =
         lower === 'content-security-policy' ||
         lower === 'strict-transport-security' ||
         lower === 'x-frame-options';
+      // Google-managed frontends (Server: gws / AS15169) often terminate these
+      // headers upstream, so a missing header is informational, not HIGH.
+      const riskLevel: RiskLevel = edge.managed ? 'Info' : isCore ? 'High' : 'Medium';
       findings.push({
         id: `missing-header-${lower}`,
         moduleId: 'headers',
-        title: `Missing Security Header: ${h}`,
-        description: `HTTP response lacks ${h}, weakening browser-side defense-in-depth protections.`,
-        riskLevel: isMedium ? 'Medium' : 'Low',
+        title: edge.managed
+          ? `Missing Security Header: ${h} (managed Google edge)`
+          : `Missing Security Header: ${h}`,
+        description: edge.managed
+          ? `HTTP response lacks ${h}. This target is fronted by a Google-managed edge (${edge.reason}); the header may be injected upstream or intentionally omitted, so this is informational.`
+          : `HTTP response lacks ${h}, weakening browser-side defense-in-depth protections.`,
+        riskLevel,
         owaspCategory: 'A05:2021 - Security Misconfiguration',
         owaspId: 'A05:2021',
         cwe: lower === 'content-security-policy' ? 'CWE-693' : 'CWE-1021',
-        evidence: `Header "${h}" absent in HTTP ${input.httpAudit.status ?? ''} response`,
-        remediation: `Configure the reverse proxy or CDN to emit a strict ${h} response header.`,
-        snippets: getHeaderFixSnippets(lower),
+        evidence: `Header "${h}" absent in final HTTP ${input.httpAudit.status ?? ''} response${edge.managed ? ` · ${edge.reason}` : ''}`,
+        remediation: edge.managed
+          ? 'Verify the edge/origin configuration directly before changing anything; do not treat this as an origin vulnerability.'
+          : `Configure the reverse proxy or CDN to emit a strict ${h} response header.`,
+        snippets: edge.managed ? undefined : getHeaderFixSnippets(lower),
       });
     }
 
-    if (input.httpAudit.cookieIssues.length > 0) {
+    const cookieAudit = input.httpAudit.cookieAudit ?? [];
+    if (cookieAudit.length > 0) {
+      const severityOrder: RiskLevel[] = ['Critical', 'High', 'Medium', 'Low', 'Info'];
+      for (const severity of severityOrder) {
+        const items = cookieAudit.filter(
+          (cookie) => cookie.severity === severity && cookie.missing.length > 0,
+        );
+        if (items.length === 0) continue;
+        const sessionItems = items.filter((cookie) => cookie.category === 'session');
+        const trackingItems = items.filter((cookie) => cookie.category === 'tracking');
+        const title =
+          severity === 'Critical'
+            ? `Critical Session Cookie Flags Missing (${items.length})`
+            : severity === 'Info'
+              ? `Tracking Cookie Flags Missing (${items.length})`
+              : `Cookie Flag Issues (${severity}, ${items.length})`;
+        findings.push({
+          id: `cookie-flags-${severity.toLowerCase()}`,
+          moduleId: 'headers',
+          title,
+          description:
+            severity === 'Critical'
+              ? `Session/authentication cookies (${sessionItems.map((cookie) => cookie.name).join(', ') || items.map((cookie) => cookie.name).join(', ')}) are missing Secure or HttpOnly. This can expose authenticated sessions to theft or XSS.`
+              : severity === 'Info'
+                ? `Tracking/analytics cookies (${trackingItems.map((cookie) => cookie.name).join(', ') || items.map((cookie) => cookie.name).join(', ')}) lack hardening flags. This is a privacy/consent observation, not a session takeover risk.`
+                : `Cookies lack recommended security attributes. Review the listed names and their purpose.`,
+          riskLevel: severity,
+          owaspCategory: 'A07:2021 - Identification and Authentication Failures',
+          owaspId: 'A07:2021',
+          cwe: 'CWE-614',
+          evidence: items
+            .slice(0, 12)
+            .map((cookie) => `${cookie.name} [${cookie.category}] missing ${cookie.missing.join(', ')}`)
+            .join(' | '),
+          remediation:
+            severity === 'Info'
+              ? 'Optional: set Secure, HttpOnly and SameSite on tracking cookies where compatible with the analytics vendor.'
+              : 'Set Secure; HttpOnly; SameSite=Lax (or Strict) on all sensitive session cookies.',
+          snippets:
+            severity === 'Info'
+              ? undefined
+              : {
+                  nginx: `proxy_cookie_path / "/; HttpOnly; Secure; SameSite=Lax";`,
+                  apache: `Header edit Set-Cookie ^(.*)$ "$1; HttpOnly; Secure; SameSite=Lax"`,
+                  cloudflare: `# Set cookie flags at origin application framework or edge response rewrite`,
+                },
+        });
+      }
+    } else if (input.httpAudit.cookieIssues.length > 0) {
       findings.push({
         id: 'insecure-cookies',
         moduleId: 'headers',
-        title: `Insecure Session Cookie Attributes (${input.httpAudit.cookieIssues.length})`,
-        description:
-          'Set-Cookie headers omit HttpOnly, Secure, or SameSite flags.',
+        title: `Insecure Cookie Attributes (${input.httpAudit.cookieIssues.length})`,
+        description: 'Set-Cookie headers omit HttpOnly, Secure, or SameSite flags.',
         riskLevel: 'Medium',
         owaspCategory: 'A07:2021 - Identification and Authentication Failures',
         owaspId: 'A07:2021',
         cwe: 'CWE-614',
         evidence: input.httpAudit.cookieIssues.slice(0, 4).join(' | '),
-        remediation:
-          'Set Secure; HttpOnly; SameSite=Lax (or Strict) on all sensitive session cookies.',
+        remediation: 'Set Secure; HttpOnly; SameSite=Lax (or Strict) on all sensitive session cookies.',
         snippets: {
           nginx: `proxy_cookie_path / "/; HttpOnly; Secure; SameSite=Lax";`,
           apache: `Header edit Set-Cookie ^(.*)$ "$1; HttpOnly; Secure; SameSite=Lax"`,
-          cloudflare: `# Set cookie flags at origin application framework or Cloudflare Worker response rewrite`,
+          cloudflare: `# Set cookie flags at origin application framework or edge response rewrite`,
+        },
+      });
+    }
+
+    if (input.httpAudit.cors?.risky) {
+      findings.push({
+        id: 'risky-cors-policy',
+        moduleId: 'headers',
+        title: 'Risky CORS Policy with Credentials',
+        description:
+          'The origin reflects an arbitrary Origin header or allows * together with credentials, which can expose authenticated responses to hostile sites.',
+        riskLevel: 'Medium',
+        owaspCategory: 'A05:2021 - Security Misconfiguration',
+        owaspId: 'A05:2021',
+        cwe: 'CWE-942',
+        evidence: `Allow-Origin: ${input.httpAudit.cors.allowOrigin} | Allow-Credentials: ${input.httpAudit.cors.allowCredentials} | reflective: ${input.httpAudit.cors.reflective}`,
+        remediation:
+          'Return an explicit allow-list of trusted origins and never combine Access-Control-Allow-Credentials: true with * or reflected origins.',
+      });
+    }
+
+    const dangerousMethods = (input.httpAudit.httpMethods ?? []).filter(
+      (method) => method === 'TRACE' || method === 'TRACK',
+    );
+    if (dangerousMethods.length > 0) {
+      findings.push({
+        id: 'dangerous-http-methods',
+        moduleId: 'headers',
+        title: `Dangerous HTTP Methods Advertised (${dangerousMethods.join(', ')})`,
+        description:
+          'TRACE/TRACK can enable cross-site tracing and should be disabled on public web servers.',
+        riskLevel: 'Low',
+        owaspCategory: 'A05:2021 - Security Misconfiguration',
+        owaspId: 'A05:2021',
+        cwe: 'CWE-749',
+        evidence: `Allow: ${input.httpAudit.httpMethods?.join(', ')}`,
+        remediation: 'Disable TRACE/TRACK in the web server configuration (Apache: TraceEnable off).',
+        snippets: {
+          nginx: `# nginx does not enable TRACE by default`,
+          apache: `TraceEnable off`,
         },
       });
     }
@@ -469,4 +591,54 @@ export function buildCategorizedFindings(input: {
   }
 
   return { findings, riskCounts };
+}
+
+const RISK_WEIGHTS: Record<RiskLevel, number> = {
+  Critical: 40,
+  High: 20,
+  Medium: 8,
+  Low: 3,
+  Info: 0,
+};
+
+const VERDICT_FLOORS: Record<TargetScanResult['verdict'], number> = {
+  CRITICAL: 80,
+  HIGH: 55,
+  ELEVATED: 30,
+  CLEAN: 0,
+};
+
+export function computeRiskScore(
+  findings: SecurityFinding[],
+  verdict: TargetScanResult['verdict'],
+): RiskScoreBreakdown {
+  const severities: RiskLevel[] = ['Critical', 'High', 'Medium', 'Low', 'Info'];
+  const components = severities
+    .map((severity) => {
+      const count = findings.filter((f) => f.riskLevel === severity).length;
+      return { severity, count, weight: RISK_WEIGHTS[severity], points: count * RISK_WEIGHTS[severity] };
+    })
+    .filter((component) => component.count > 0);
+
+  const rawPoints = components.reduce((sum, component) => sum + component.points, 0);
+  const verdictFloor = VERDICT_FLOORS[verdict] ?? 0;
+  const score = Math.min(100, Math.max(rawPoints, verdictFloor));
+  const grade: RiskScoreBreakdown['grade'] =
+    score >= 70 ? 'F' : score >= 50 ? 'D' : score >= 30 ? 'C' : score >= 15 ? 'B' : 'A';
+
+  return {
+    score,
+    grade,
+    rawPoints,
+    verdictFloor,
+    capped: rawPoints > 100,
+    components,
+  };
+}
+
+export function applyRiskScore(result: TargetScanResult): TargetScanResult {
+  return {
+    ...result,
+    riskScore: computeRiskScore(result.findings ?? [], result.verdict),
+  };
 }

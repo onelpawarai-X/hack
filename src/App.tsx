@@ -1,6 +1,9 @@
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AttackerDossierPanel } from './components/AttackerDossierPanel';
 import { AttackerInspector } from './components/AttackerInspector';
+import { AuthGate } from './components/AuthGate';
+import { ControlCenter } from './components/ControlCenter';
 import { DefenseGrid } from './components/DefenseGrid';
 import { DomainVerificationPanel } from './components/DomainVerificationPanel';
 import { EthicalBanner } from './components/EthicalBanner';
@@ -9,9 +12,11 @@ import { LiveScanTerminal } from './components/LiveScanTerminal';
 import { LiveThreatMap } from './components/LiveThreatMap';
 import { RadarCanvas } from './components/RadarCanvas';
 import { ScanProgressBar } from './components/ScanProgressBar';
+import { SecurityStackPanel } from './components/SecurityStackPanel';
 import { SeverityCharts } from './components/SeverityCharts';
 import { TargetScannerPanel } from './components/TargetScannerPanel';
 import { ThreatFeedsMatrix, type MatrixTab } from './components/ThreatFeedsMatrix';
+import { AuthProvider, useAuth } from './hooks/useAuth.tsx';
 import { useDefenseGrid } from './hooks/useDefenseGrid';
 import { useScanSocket } from './hooks/useScanSocket';
 import { getCyberTranslations } from './i18n/cyberTranslations';
@@ -42,9 +47,11 @@ const EMPTY_DEFENSE_STATE: DefenseStateSnapshot = {
   },
 };
 
-export default function App() {
+function AppDashboard() {
   const [lang, setLang] = useState<Language>('bn');
   const t = getCyberTranslations(lang);
+  const auth = useAuth();
+  const [controlOpen, setControlOpen] = useState(false);
 
   const [radar, setRadar] = useState<RadarSnapshot | null>(null);
   const [loadingRadar, setLoadingRadar] = useState(true);
@@ -511,6 +518,17 @@ export default function App() {
               <span>{loadingRadar ? t.scanningNow : t.scanNowBtn}</span>
             </button>
 
+            <button
+              type="button"
+              onClick={() => setControlOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-200 text-[11px] sm:text-xs font-semibold hover:bg-cyan-500/20 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">
+                {lang === 'bn' ? 'কন্ট্রোল সেন্টার' : 'Control Center'}
+              </span>
+            </button>
+
             <div
               role="group"
               aria-label="Language toggle"
@@ -644,6 +662,14 @@ export default function App() {
           onRemoveSite={(id) => void handleGridRemoveSite(id)}
         />
 
+        <SecurityStackPanel lang={lang} />
+
+        <AttackerDossierPanel
+          lang={lang}
+          initialIp={selectedNode?.ip}
+          onBlocked={() => void fetchDefenseState()}
+        />
+
         {/* Deep Target, IP Map Plotting & Website Defense Shield Scanner */}
         <div ref={scannerSectionRef} className="space-y-6">
           {/* Realtime Scan Lab: Progress + Live Terminal + Ownership Verification */}
@@ -734,7 +760,27 @@ export default function App() {
             onRemoveShield={(id) => void handleRemoveShield(id)}
           />
         </div>
+
+        <ControlCenter
+          open={controlOpen}
+          onClose={() => setControlOpen(false)}
+          lang={lang}
+          user={auth.status?.user ?? null}
+          onLogout={() => void auth.logout()}
+          autoDefense={defenseGrid.snapshot?.stats.autoDefenseEnabled ?? true}
+          onToggleAutoDefense={(enabled) => void defenseGrid.setAutoDefense(enabled)}
+        />
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AuthGate>
+        <AppDashboard />
+      </AuthGate>
+    </AuthProvider>
   );
 }

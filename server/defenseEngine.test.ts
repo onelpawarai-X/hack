@@ -42,8 +42,6 @@ test('generateGlobalFirewallBundle aggregates blocked IPs and sinkholed phishing
         abuseEmails: ['abuse@registrar.example'],
         hostsEntry: '0.0.0.0 evil-phish-login.example',
         piholeRule: '||evil-phish-login.example^',
-        safeBrowsingUrl: 'https://safebrowsing.google.com/',
-        netcraftReportUrl: 'https://report.netcraft.com/',
       },
     ],
   );

@@ -152,7 +152,7 @@ export function SeverityCharts({
                   className="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-200"
                   title={item.evidence}
                 >
-                  {item.name} · {item.category}
+                  {item.name}{item.version ? ` ${item.version}` : ''} · {item.category}
                 </span>
               ))}
             </div>

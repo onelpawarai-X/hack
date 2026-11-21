@@ -26,8 +26,8 @@ import {
 } from './modules/types.ts';
 import { wafModule } from './modules/wafModule.ts';
 import { extractRootDomain } from './osintParsers.ts';
+import { localCve } from './localCve.ts';
 import { detectTechStack, filterContextualCves } from './techStack.ts';
-import { threatMonitor } from './threatMonitor.ts';
 import {
   computeTargetVerdict,
   generateHardeningRecommendations,
@@ -173,27 +173,23 @@ export async function runModularScanOrchestrator(
 
   // 1. Direct CVE Deep Investigation
   if (desc.targetType === 'cve') {
-    emitProgress('osintMeta', `Querying MITRE CVE & CISA KEV for ${desc.normalizedTarget}...`, 45);
-    const snapshot = await threatMonitor.getSnapshot(false);
+    emitProgress('osintMeta', `Querying the offline CVE database for ${desc.normalizedTarget}...`, 45);
     const [cveDetail, webSignals] = await Promise.all([
       fetchMitreCveDetail(desc.normalizedTarget),
       searchWebBreachSignals(desc.normalizedTarget),
     ]);
-    const kevMatch = snapshot.cves.find(
-      (c) => c.cveID.toUpperCase() === desc.normalizedTarget,
-    );
 
     const feedMatches: Array<{ feed: string; detail: string }> = [];
-    if (kevMatch) {
+    if (cveDetail) {
       feedMatches.push({
-        feed: 'CISA Known Exploited Vulnerabilities',
-        detail: `${kevMatch.vendorProject} ${kevMatch.product}: ${kevMatch.vulnerabilityName}`,
+        feed: 'Local CVE Database',
+        detail: `${cveDetail.cveId}: ${cveDetail.title}`,
       });
     }
 
     const score = cveDetail?.cvssScore ?? 0;
     const verdict: TargetScanResult['verdict'] =
-      kevMatch || score >= 9 || cveDetail?.cvssSeverity === 'CRITICAL'
+      score >= 9 || cveDetail?.cvssSeverity === 'CRITICAL'
         ? 'CRITICAL'
         : score >= 7 || cveDetail?.cvssSeverity === 'HIGH'
           ? 'HIGH'
@@ -202,17 +198,14 @@ export async function runModularScanOrchestrator(
             : 'CLEAN';
 
     const reasons: string[] = [];
-    if (kevMatch) {
-      reasons.push(`Actively exploited in the wild (CISA KEV, due ${kevMatch.dueDate})`);
-    }
     if (cveDetail?.cvssScore !== undefined) {
       reasons.push(
-        `MITRE CVSS ${cveDetail.cvssScore} (${cveDetail.cvssSeverity || 'Scored'}) · ${cveDetail.cwes[0] || cveDetail.title}`,
+        `Local CVE CVSS ${cveDetail.cvssScore} (${cveDetail.cvssSeverity || 'Scored'}) · ${cveDetail.cwes[0] || cveDetail.title}`,
       );
     } else if (cveDetail) {
-      reasons.push(`Official MITRE CVE record retrieved: ${cveDetail.title}`);
+      reasons.push(`Local CVE record retrieved: ${cveDetail.title}`);
     } else {
-      reasons.push(`No published MITRE CVE record returned for ${desc.normalizedTarget}`);
+      reasons.push(`No record for ${desc.normalizedTarget} in the local CVE database`);
     }
 
     const cveList: CveDetailRecord[] = cveDetail ? [cveDetail] : [];
@@ -288,7 +281,7 @@ export async function runModularScanOrchestrator(
 
   // 2. General Web Threat Intelligence Search
   if (desc.targetType === 'search') {
-    emitProgress('osintMeta', `Searching global breach signals for "${desc.query}"...`, 60);
+    emitProgress('osintMeta', `Searching the local IOC store for "${desc.query}"...`, 60);
     const signals = await searchWebBreachSignals(desc.query);
     const highSignals = signals.filter((s) => s.severity === 'CRITICAL' || s.severity === 'HIGH');
     emitProgress('finalize', 'Finalizing search dossier...', 100);
@@ -301,8 +294,8 @@ export async function runModularScanOrchestrator(
       verdict: highSignals.length >= 2 ? 'ELEVATED' : 'CLEAN',
       verdictReasons:
         signals.length > 0
-          ? [`Found ${signals.length} live global web security dispatches matching "${desc.query}"`]
-          : [`No active breach or attack reports indexed for "${desc.query}"`],
+          ? [`Found ${signals.length} local IOC match(es) for "${desc.query}"`]
+          : [`No local IOC match for "${desc.query}"`],
       feedMatches: [],
       dns: {
         a: [],
@@ -449,8 +442,19 @@ export async function runModularScanOrchestrator(
     html: ctx.htmlSample,
     portScan: ctx.portScan,
     waf: ctx.waf,
+    cpes: ctx.attribution.flatMap((node) => node.cpes ?? []),
   });
   ctx.techStack = detectedStack;
+  const localStackCves = localCve.lookupForStack(detectedStack);
+  if (localStackCves.length > 0) {
+    const byId = new Map([...ctx.cveDetails, ...localStackCves].map((cve) => [cve.cveId, cve]));
+    ctx.cveDetails = Array.from(byId.values());
+    emitLog(
+      `Offline CVE database matched ${localStackCves.length} record(s) to the observed stack`,
+      'success',
+      'finalize',
+    );
+  }
   if (detectedStack.length > 0) {
     emitLog(
       `Detected technology stack: ${detectedStack.map((item) => `${item.name} (${item.category})`).join(', ')}`,

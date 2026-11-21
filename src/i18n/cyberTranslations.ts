@@ -95,6 +95,23 @@ export interface CyberTranslations {
     missingHeaders: string;
     allHeadersPresent: string;
     noFeedHits: string;
+    riskScoreTitle: string;
+    riskScoreOutOf: string;
+    riskScoreFormula: string;
+    riskScoreGrade: string;
+    findingsTitle: string;
+    findingsEmpty: string;
+    findingEvidence: string;
+    findingRemediation: string;
+    coverageTitle: string;
+    coverageExecuted: string;
+    coverageSkipped: string;
+    coverageNoSkipped: string;
+    coverageOwnershipVerified: string;
+    coverageOwnershipPending: string;
+    exportJson: string;
+    exportPdf: string;
+    exportPdfNote: string;
   };
   forensics: {
     title: string;
@@ -213,10 +230,10 @@ const bn: CyberTranslations = {
   ispLabel: 'ISP / হোস্টিং সংস্থা',
   reverseDnsLabel: 'রিভার্স DNS (PTR)',
   flagsLabel: 'নেটওয়ার্ক ধরন',
-  openPortsLabel: 'উন্মুক্ত পোর্ট (Shodan)',
+  openPortsLabel: 'উন্মুক্ত পোর্ট (নেটিভ স্ক্যান)',
   knownVulnsLabel: 'পরিচিত দুর্বলতা (CVEs)',
   cidrLabel: 'RDAP নেটওয়ার্ক ব্লক',
-  abuseContactLabel: 'Abuse ইমেইল (RDAP)',
+  abuseContactLabel: 'Abuse ইমেইল (WHOIS)',
   proxyDetected: 'প্রক্সি / VPN চিহ্নিত',
   torExitDetected: 'টর (Tor) এক্সিট নোড চিহ্নিত',
   hostingNode: 'ডেটাসেন্টার / হোস্টিং সার্ভার',
@@ -234,7 +251,7 @@ const bn: CyberTranslations = {
   scanner: {
     title: 'লাইভ ওয়েবসাইট, ডোমেইন, IP ও সিস্টেম ডিফেন্ড স্ক্যানার',
     subtitle:
-      'যেকোনো IP, ওয়েবসাইট বা ডোমেইন লিখুন — ম্যাপে অবস্থান ও ঠিকানা দেখাবে, DNS/SPF/DMARC, TLS সাইফার ও Shodan CVE অডিট করবে এবং এক ক্লিকে সিস্টেম সুরক্ষার লাইভ ডিফেন্ড শিল্ড চালু করবে।',
+      'যেকোনো IP, ওয়েবসাইট বা ডোমেইন লিখুন — ম্যাপে অবস্থান ও ঠিকানা দেখাবে, DNS/SPF/DMARC, TLS সাইফার ও অফলাইন CVE অডিট করবে এবং এক ক্লিকে সিস্টেম সুরক্ষার লাইভ ডিফেন্ড শিল্ড চালু করবে।',
     placeholder: 'IPv4 (যেমন: 1.1.1.1), ডোমেইন/URL, অথবা CVE-2024-3094 লিখুন...',
     scanBtn: 'গভীর OSINT স্ক্যান',
     scanningBtn: 'গভীর বিশ্লেষণ চলছে...',
@@ -247,13 +264,13 @@ const bn: CyberTranslations = {
     verdictLabel: 'নিরাপত্তা সিদ্ধান্ত',
     feedHitsTitle: 'থ্রেট ইন্টেলিজেন্স ফিডে ম্যাচ',
     attributionTitle: 'উৎস অবস্থান, বাস্তব ঠিকানা ও পোর্ট অডিট',
-    bgpTitle: 'BGP রাউটিং ও প্রিফিক্স (RIPEstat)',
+    bgpTitle: 'BGP রাউটিং ও প্রিফিক্স (Team Cymru DNS)',
     focusOnMapBtn: 'ম্যাপে দেখুন',
     activateShieldBtn: 'ওয়েবসাইটে ডিফেন্ড শিল্ড চালু করুন',
     defendIpActionBtn: 'আক্রমণকারী IP ব্লক ও মনিটর করুন',
     shieldActivatedMsg: 'লাইভ ডিফেন্ড শিল্ড ও কনটিনিউয়াস ওয়াচডগ চালু হয়েছে!',
     dnsTitle: 'লাইভ DNS, SPF, DMARC ও CAA',
-    rdapTitle: 'ডোমেইন রেজিস্ট্রার ও RDAP তথ্য',
+    rdapTitle: 'ডোমেইন রেজিস্ট্রার ও WHOIS তথ্য',
     emailSecurityLabel: 'ইমেইল অ্যান্টি-স্পুফিং (SPF/DMARC)',
     emailProtected: 'সুরক্ষিত (SPF + DMARC Enforce)',
     emailWeak: 'দুর্বল বা মনিটর-মাত্র পলিসি',
@@ -275,6 +292,23 @@ const bn: CyberTranslations = {
     missingHeaders: 'অনুপস্থিত নিরাপত্তা হেডার',
     allHeadersPresent: 'প্রয়োজনীয় সব নিরাপত্তা হেডার উপস্থিত রয়েছে',
     noFeedHits: 'Blocklist.de, CINS Army, Feodo C2, Tor Exit বা OpenPhish-এ কোনো বিপজ্জনক ম্যাচ পাওয়া যায়নি।',
+    riskScoreTitle: 'ঝুঁকি স্কোর',
+    riskScoreOutOf: '১০০-এর মধ্যে',
+    riskScoreFormula: 'স্কোর = Σ(ফাইন্ডিং × ওয়েট) এবং ভের্ডিক্ট ফ্লোরের মধ্যে সর্বোচ্চ, ১০০-এ ক্যাপ করা। ওয়েট: ক্রিটিক্যাল ৪০, হাই ২০, মিডিয়াম ৮, লো ৩।',
+    riskScoreGrade: 'গ্রেড',
+    findingsTitle: 'বিস্তারিত নিরাপত্তা ফাইন্ডিং',
+    findingsEmpty: 'কোনো ফাইন্ডিং পাওয়া যায়নি।',
+    findingEvidence: 'প্রমাণ',
+    findingRemediation: 'প্রতিকার',
+    coverageTitle: 'স্ক্যান কভারেজ',
+    coverageExecuted: 'সম্পন্ন মডিউল',
+    coverageSkipped: 'বাদ পড়া অ্যাক্টিভ মডিউল',
+    coverageNoSkipped: 'কোনো অ্যাক্টিভ মডিউল বাদ পড়েনি।',
+    coverageOwnershipVerified: 'ডোমেইন মালিকানা যাচাই হয়েছে',
+    coverageOwnershipPending: 'ডোমেইন মালিকানা যাচাই হয়নি — অ্যাক্টিভ প্রোব বন্ধ',
+    exportJson: 'JSON রিপোর্ট',
+    exportPdf: 'PDF রিপোর্ট',
+    exportPdfNote: 'PDF-এ ইংরেজি লেবেল ব্যবহার করা হয় ফন্ট সামঞ্জস্যের জন্য।',
   },
   forensics: {
     title: 'গভীরতম পিকচার ফরেনসিকস, ডিভাইস ও IP এক্সট্রাক্টর',
@@ -343,7 +377,7 @@ const bn: CyberTranslations = {
       'বাস্তব Nginx/iptables/Cloudflare ফায়ারওয়াল রুল, DNS সিঙ্কহোল, RDAP Abuse ইমেইল টেকডাউন এবং আপনার ওয়েবসাইটের ২৪/৭ ওয়াচডগ শিল্ড এখান থেকে নিয়ন্ত্রণ করুন।',
     protectedWebsitesTitle: 'সুরক্ষিত ওয়েবসাইট ও সিস্টেম ওয়াচডগ শিল্ড',
     noShieldsYet: 'এখনো কোনো ওয়েবসাইটে ডিফেন্ড শিল্ড চালু করা হয়নি — উপরের স্ক্যানারে যেকোনো সাইট স্ক্যান করে শিল্ড চালু করুন।',
-    blockedAttackersTitle: 'প্রতিরোধকৃত আক্রমণকারী IP ও RDAP Abuse টেকডাউন',
+    blockedAttackersTitle: 'প্রতিরোধকৃত আক্রমণকারী IP ও WHOIS Abuse টেকডাউন',
     noBlockedIpsYet: 'এখনো কোনো আক্রমণকারী IP ব্লক করা হয়নি — সক্রিয় আক্রমণকারী ট্যাব থেকে "ডিফেন্ড করুন" চাপুন।',
     sinkholedDomainsTitle: 'ফিশিং ও ফাঁদ URL সিঙ্কহোল ও টেকডাউন লিস্ট',
     noSinkholesYet: 'এখনো কোনো ফিশিং সাইট সিঙ্কহোল করা হয়নি — ফিশিং ট্যাব থেকে "বন্ধ / টেকডাউন করুন" চাপুন।',
@@ -401,10 +435,10 @@ const en: CyberTranslations = {
   ispLabel: 'ISP / Hosting Provider',
   reverseDnsLabel: 'Reverse DNS (PTR)',
   flagsLabel: 'Infrastructure Class',
-  openPortsLabel: 'Exposed Ports (Shodan)',
+  openPortsLabel: 'Exposed Ports (native scan)',
   knownVulnsLabel: 'Known Host CVEs',
-  cidrLabel: 'RDAP Network CIDR',
-  abuseContactLabel: 'Abuse Contact (RDAP)',
+  cidrLabel: 'WHOIS Network CIDR',
+  abuseContactLabel: 'Abuse Contact (WHOIS)',
   proxyDetected: 'Proxy / VPN Detected',
   torExitDetected: 'Tor Network Exit Node',
   hostingNode: 'Datacenter / Hosting Node',
@@ -422,7 +456,7 @@ const en: CyberTranslations = {
   scanner: {
     title: 'Live Website, Domain, IP & System Defense Scanner',
     subtitle:
-      'Enter any IP, website URL, or domain — maps real location & address, audits DNS/SPF/DMARC, TLS cipher & Shodan CVEs, and lets you deploy a continuous Defense Shield.',
+      'Enter any IP, website URL, or domain — maps real location & address, audits DNS/SPF/DMARC, TLS cipher & offline CVEs, and lets you deploy a continuous Defense Shield.',
     placeholder: 'Enter IPv4 (e.g. 1.1.1.1), domain/URL, or CVE-2024-3094...',
     scanBtn: 'Deep OSINT Scan',
     scanningBtn: 'Deep Scanning...',
@@ -435,13 +469,13 @@ const en: CyberTranslations = {
     verdictLabel: 'Security Verdict',
     feedHitsTitle: 'Live Threat Feed Matches',
     attributionTitle: 'Origin Address, Map Location & Port Exposure',
-    bgpTitle: 'BGP Routing & Prefix (RIPEstat)',
+    bgpTitle: 'BGP Routing & Prefix (Team Cymru DNS)',
     focusOnMapBtn: 'Pin on Map',
     activateShieldBtn: 'Activate Website Defense Shield',
     defendIpActionBtn: 'Block & Monitor Attacker IP',
     shieldActivatedMsg: 'Live Defense Shield & continuous watchdog activated!',
     dnsTitle: 'Live DNS, SPF, DMARC & CAA',
-    rdapTitle: 'Domain Registrar & RDAP Lifecycle',
+    rdapTitle: 'Domain Registrar & WHOIS Lifecycle',
     emailSecurityLabel: 'Email Anti-Spoofing (SPF/DMARC)',
     emailProtected: 'Protected (SPF + Enforced DMARC)',
     emailWeak: 'Weak or Monitor-Only Policy',
@@ -450,9 +484,9 @@ const en: CyberTranslations = {
     httpTitle: 'HTTP Security Headers & Cookie Audit',
     securityTxtLabel: 'security.txt',
     robotsTxtLabel: 'robots.txt',
-    waybackTitle: 'Web Archive History (Wayback)',
+    waybackTitle: 'Archive History (local import)',
     subdomainsTitle: 'Discovered Subdomains (Certificate Transparency)',
-    cveDetailsTitle: 'Official MITRE CVE-5.2 Vulnerability & CVSS Audit',
+    cveDetailsTitle: 'Offline CVE/NVD local mirror & CVSS audit',
     cookieIssuesLabel: 'Cookie Security Findings',
     hardeningTitle: 'System Defense Hardening Action Plan',
     hardeningClean: 'No urgent defensive configuration gaps detected.',
@@ -462,7 +496,24 @@ const en: CyberTranslations = {
     daysLeft: 'days remaining',
     missingHeaders: 'Missing Security Headers',
     allHeadersPresent: 'All core HTTP security headers present',
-    noFeedHits: 'No hits across Blocklist.de, CINS Army, Feodo C2, Tor Exit, or OpenPhish live feeds.',
+    noFeedHits: 'No hits in the local IOC store (Tor/C2/botnet/phishing/scanner).',
+    riskScoreTitle: 'Risk Score',
+    riskScoreOutOf: 'out of 100',
+    riskScoreFormula: 'Score = max(Σ(finding × weight), verdict floor), capped at 100. Weights: Critical 40, High 20, Medium 8, Low 3.',
+    riskScoreGrade: 'Grade',
+    findingsTitle: 'Detailed Security Findings',
+    findingsEmpty: 'No findings detected.',
+    findingEvidence: 'Evidence',
+    findingRemediation: 'Remediation',
+    coverageTitle: 'Scan Coverage',
+    coverageExecuted: 'Completed modules',
+    coverageSkipped: 'Skipped active modules',
+    coverageNoSkipped: 'No active modules were skipped.',
+    coverageOwnershipVerified: 'Domain ownership verified',
+    coverageOwnershipPending: 'Domain ownership not verified — active probes disabled',
+    exportJson: 'JSON report',
+    exportPdf: 'PDF report',
+    exportPdfNote: 'PDF uses English labels for font compatibility.',
   },
   forensics: {
     title: 'Ultra-Deep Picture Forensics, Device & IP Extractor',
@@ -528,10 +579,10 @@ const en: CyberTranslations = {
   },
   defense: {
     subtitle:
-      'Deploy real Nginx/iptables/Cloudflare firewall rules, DNS phishing sinkholes, RDAP abuse takedown packets, and continuous 24/7 website defense watchdogs.',
+      'Deploy real Nginx/iptables firewall rules, DNS phishing sinkholes, WHOIS abuse takedown packets, and continuous 24/7 website defense watchdogs.',
     protectedWebsitesTitle: 'Protected Website & System Watchdog Shields',
     noShieldsYet: 'No website defense shields active yet — scan any site above to activate continuous protection.',
-    blockedAttackersTitle: 'Blocked Attacker IPs & RDAP Abuse Takedowns',
+    blockedAttackersTitle: 'Blocked Attacker IPs & WHOIS Abuse Takedowns',
     noBlockedIpsYet: 'No attacker IPs blocked yet — click Defend on any active attacker.',
     sinkholedDomainsTitle: 'Sinkholed Phishing Domains & Takedowns',
     noSinkholesYet: 'No phishing domains sinkholed yet — click Block & Takedown on any phishing trap.',

@@ -19,6 +19,8 @@ import {
   generateFirewallRulesForIp,
   lookupRdapIpAbuse,
 } from './defenseEngine.ts';
+import { insertAttackEvent, listAttackEvents } from './db.ts';
+import { requestFingerprint, type RequestFingerprint } from './fingerprint.ts';
 import { traceAttackerIp } from './scanner.ts';
 import { threatMonitor } from './threatMonitor.ts';
 import { isPrivateOrReservedIp, isValidIpv4 } from './threatRules.ts';
@@ -27,6 +29,10 @@ const MAX_EVENTS = 400;
 const SENSOR_STATE_PATH = path.resolve(process.cwd(), '.sentinel-sensor-state.json');
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT_PER_MINUTE = Number(process.env.SENTINEL_RATE_LIMIT_PER_MINUTE) || 240;
+const SUBNET_RATE_LIMIT_PER_MINUTE =
+  Number(process.env.SENTINEL_SUBNET_RATE_LIMIT_PER_MINUTE) || 900;
+const ASN_RATE_LIMIT_PER_MINUTE =
+  Number(process.env.SENTINEL_ASN_RATE_LIMIT_PER_MINUTE) || 2400;
 const AUTO_BLOCK_AFTER = Number(process.env.SENTINEL_AUTO_BLOCK_AFTER) || 3;
 const TARPIT_MS = Number(process.env.SENTINEL_TARPIT_MS) || 1200;
 
@@ -240,6 +246,15 @@ class AttackSensor {
 
   constructor() {
     this.loadState();
+    this.loadPersistedEvents();
+  }
+
+  private loadPersistedEvents() {
+    try {
+      this.events = listAttackEvents({ limit: MAX_EVENTS, source: 'sensor' });
+    } catch {
+      this.events = [];
+    }
   }
 
   private loadState() {
@@ -305,8 +320,28 @@ class AttackSensor {
     return Array.from(this.safeIps);
   }
 
+  getDetectionConfig() {
+    return {
+      windowSeconds: RATE_WINDOW_MS / 1000,
+      ipRateLimit: RATE_LIMIT_PER_MINUTE,
+      subnetRateLimit: SUBNET_RATE_LIMIT_PER_MINUTE,
+      asnRateLimit: ASN_RATE_LIMIT_PER_MINUTE,
+      autoBlockAfter: AUTO_BLOCK_AFTER,
+      tarpitMs: TARPIT_MS,
+      autoDefenseEnabled: this.autoDefenseEnabled,
+      safeIps: Array.from(this.safeIps),
+      ja3Headers: ['x-ja3-hash', 'x-ja3', 'cf-ja3-hash'],
+      ja4Headers: ['x-ja4', 'cf-ja4'],
+      tlshEnabled: true,
+    };
+  }
+
   clearEvents(): void {
     this.events = [];
+  }
+
+  ingestExternalEvents(events: AttackEvent[]): void {
+    for (const event of events) this.record(event);
   }
 
   private isBlockable(ip: string): boolean {
@@ -333,6 +368,11 @@ class AttackSensor {
   private record(event: AttackEvent): AttackEvent {
     this.events.unshift(event);
     if (this.events.length > MAX_EVENTS) this.events.length = MAX_EVENTS;
+    try {
+      insertAttackEvent(event);
+    } catch {
+      // The live grid must keep working even if the local store is unavailable.
+    }
     this.broadcast?.(event, event.action === 'blocked');
     return event;
   }
@@ -343,6 +383,7 @@ class AttackSensor {
     classification: Classification,
     action: AttackEvent['action'],
     requestCount?: number,
+    fp: RequestFingerprint = requestFingerprint(req, ip),
   ): AttackEvent {
     return {
       id: randomUUID(),
@@ -360,6 +401,14 @@ class AttackSensor {
       action,
       source: 'sensor',
       requestCount,
+      asn: fp.asn,
+      subnet: fp.subnet,
+      ja3: fp.ja3,
+      ja4: fp.ja4,
+      tlsh: fp.tlsh,
+      tlsVersion: fp.tlsVersion,
+      cipher: fp.cipher,
+      fingerprint: fp.sha256,
     };
   }
 
@@ -397,22 +446,45 @@ class AttackSensor {
 
     const blocked: AttackEvent = { ...event, action: 'blocked' };
     void defenseEngine
-      .defendAttackerIp(event.ip, `${event.category}: ${event.detail}`)
+      .defendAttackerIp(event.ip, `${event.category}: ${event.detail}`, event.severity)
       .catch(() => null);
     return blocked;
   }
 
-  private rateExceeded(ip: string): { exceeded: boolean; count: number } {
-    if (!ip) return { exceeded: false, count: 0 };
+  private rateExceeded(
+    ip: string,
+    subnet?: string,
+    asn?: string,
+  ): { exceeded: boolean; count: number; scope: 'ip' | 'subnet' | 'asn'; limit: number } {
+    if (!ip) return { exceeded: false, count: 0, scope: 'ip', limit: RATE_LIMIT_PER_MINUTE };
     const now = Date.now();
     this.prune(now);
-    const entry = this.rates.get(ip);
-    if (!entry || now - entry.startedAt > RATE_WINDOW_MS) {
-      this.rates.set(ip, { count: 1, startedAt: now });
-      return { exceeded: false, count: 1 };
+
+    const checks: Array<{ scope: 'ip' | 'subnet' | 'asn'; key: string; limit: number }> = [
+      { scope: 'ip', key: `ip:${ip}`, limit: RATE_LIMIT_PER_MINUTE },
+    ];
+    if (subnet) checks.push({ scope: 'subnet', key: `net:${subnet}`, limit: SUBNET_RATE_LIMIT_PER_MINUTE });
+    if (asn) checks.push({ scope: 'asn', key: `asn:${asn}`, limit: ASN_RATE_LIMIT_PER_MINUTE });
+
+    let firstExceeded: { count: number; scope: 'ip' | 'subnet' | 'asn'; limit: number } | null = null;
+    let ipCount = 0;
+
+    for (const check of checks) {
+      const entry = this.rates.get(check.key);
+      const next =
+        !entry || now - entry.startedAt > RATE_WINDOW_MS
+          ? { count: 1, startedAt: now }
+          : { count: entry.count + 1, startedAt: entry.startedAt };
+      this.rates.set(check.key, next);
+      if (check.scope === 'ip') ipCount = next.count;
+      if (!firstExceeded && next.count > check.limit) {
+        firstExceeded = { count: next.count, scope: check.scope, limit: check.limit };
+      }
     }
-    entry.count += 1;
-    return { exceeded: entry.count > RATE_LIMIT_PER_MINUTE, count: entry.count };
+
+    return firstExceeded
+      ? { exceeded: true, ...firstExceeded }
+      : { exceeded: false, count: ipCount, scope: 'ip', limit: RATE_LIMIT_PER_MINUTE };
   }
 
   middleware = async (req: Request, res: Response, next: NextFunction) => {
@@ -422,7 +494,8 @@ class AttackSensor {
     }
     this.sensorRequests += 1;
     const ip = clientIp(req);
-    const rate = this.rateExceeded(ip);
+    const fp = requestFingerprint(req, ip);
+    const rate = this.rateExceeded(ip, fp.subnet, fp.asn);
 
     if (rate.exceeded) {
       const event = this.buildSensorEvent(
@@ -431,11 +504,12 @@ class AttackSensor {
         {
           category: 'ddos',
           severity: 'CRITICAL',
-          detail: `Request flood: ${rate.count} requests in 60s from one source`,
+          detail: `Request flood: ${rate.count} requests in 60s at ${rate.scope} scope (limit ${rate.limit})`,
           honeypot: false,
         },
         'blocked',
         rate.count,
+        fp,
       );
       const blocked = await this.autoBlock(req, event);
       this.record(blocked);
@@ -460,7 +534,7 @@ class AttackSensor {
     }
 
     const isApi = req.path.startsWith('/api/') || req.path.startsWith('/socket.io/');
-    const event = this.buildSensorEvent(req, ip, classification, 'observed');
+    const event = this.buildSensorEvent(req, ip, classification, 'observed', undefined, fp);
 
     if (classification.honeypot) {
       const blocked = await this.autoBlock(req, event);

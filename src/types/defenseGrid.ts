@@ -35,6 +35,14 @@ export interface AttackEvent {
   isp?: string;
   abuseEmails?: string[];
   requestCount?: number;
+  sensorId?: string;
+  ja3?: string;
+  ja4?: string;
+  tlsh?: string;
+  tlsVersion?: string;
+  cipher?: string;
+  subnet?: string;
+  fingerprint?: string;
 }
 
 export interface DefenseGridStats {

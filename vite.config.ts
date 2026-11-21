@@ -33,6 +33,47 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      chunkSizeWarningLimit: 700,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: 'vendor-react',
+                test: /node_modules[\\/](react|react-dom|scheduler|react-is)[\\/]/,
+                priority: 30,
+              },
+              {
+                name: 'vendor-map',
+                test: /node_modules[\\/](leaflet|react-leaflet)[\\/]/,
+                priority: 20,
+              },
+              {
+                name: 'vendor-charts',
+                test: /node_modules[\\/](recharts|d3-[^\\/]+|victory-[^\\/]+)[\\/]/,
+                priority: 20,
+              },
+              {
+                name: 'vendor-pdf',
+                test: /node_modules[\\/](jspdf|html2canvas|dompurify)[\\/]/,
+                priority: 20,
+              },
+              {
+                name: 'vendor-motion',
+                test: /node_modules[\\/](motion|framer-motion)[\\/]/,
+                priority: 20,
+              },
+              {
+                name: 'vendor',
+                test: /node_modules[\\/]/,
+                priority: 10,
+              },
+            ],
+          },
+        },
+      },
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
