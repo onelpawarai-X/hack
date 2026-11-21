@@ -15,3 +15,5 @@ data/sentinel.db*
 data/enforcement/
 
 data/terminal/
+.sentinel-docker/
+

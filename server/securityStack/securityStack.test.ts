@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { SECURITY_TOOLS } from './catalog.ts';
 import { buildSecurityToolConfig } from './configs.ts';
+import {
+  detectServerlessSandbox,
+  findDockerBinary,
+  getDockerExecEnv,
+  validateDockerHost,
+} from './dockerEnv.ts';
 import { ingestNormalizedEvents } from './ingest.ts';
 import {
   parseBeelzebubEvent,
@@ -235,4 +244,66 @@ test('ingestNormalizedEvents accepts a private-IP honeypot event without blockin
   assert.equal(result.accepted, 1);
   assert.equal(result.blocked, 0);
   assert.equal(result.events[0].ip, '10.0.0.99');
+});
+
+test('validateDockerHost accepts safe endpoints and rejects injection vectors', () => {
+  assert.deepEqual(validateDockerHost('  '), { ok: true, value: '' });
+  assert.deepEqual(validateDockerHost('tcp://203.0.113.10:2376'), {
+    ok: true,
+    value: 'tcp://203.0.113.10:2376',
+  });
+  assert.deepEqual(validateDockerHost('unix:///var/run/docker.sock'), {
+    ok: true,
+    value: 'unix:///var/run/docker.sock',
+  });
+  assert.deepEqual(validateDockerHost('ssh://deploy@vps.example.com:2222'), {
+    ok: true,
+    value: 'ssh://deploy@vps.example.com:2222',
+  });
+
+  assert.equal(validateDockerHost('tcp://bad.host:2375;rm -rf /').ok, false);
+  assert.equal(validateDockerHost('unix://relative/path.sock').ok, false);
+  assert.equal(validateDockerHost('unix:///var/../etc/passwd').ok, false);
+  assert.equal(validateDockerHost('tcp://host.example:99999').ok, false);
+  assert.equal(validateDockerHost('ftp://host.example:21').ok, false);
+});
+
+test('detectServerlessSandbox detects gVisor and Cloud Run accurately', () => {
+  const gvisor = detectServerlessSandbox({
+    procVersion: 'Linux version 4.19.0-gvisor #1 SMP',
+    hasDockerSock: false,
+    cgroupEntries: [],
+    env: {},
+  });
+  assert.equal(gvisor.isServerlessSandbox, true);
+
+  const cloudRun = detectServerlessSandbox({
+    procVersion: 'Linux version 6.1.0-cloud',
+    hasDockerSock: false,
+    cgroupEntries: ['cpu', 'memory'],
+    env: { K_SERVICE: 'sentinelglobe' },
+  });
+  assert.equal(cloudRun.isServerlessSandbox, true);
+
+  const localVps = detectServerlessSandbox({
+    procVersion: 'Linux version 6.8.0-generic',
+    hasDockerSock: true,
+    cgroupEntries: ['cpu', 'memory'],
+    env: {},
+  });
+  assert.equal(localVps.isServerlessSandbox, false);
+});
+
+test('findDockerBinary locates custom executable binary and getDockerExecEnv adds bundled bin dir', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sentinel-test-bin-'));
+  try {
+    const fakeDocker = path.join(tmpDir, 'docker');
+    fs.writeFileSync(fakeDocker, '#!/bin/sh\necho Docker test\n', { mode: 0o755 });
+    const found = findDockerBinary([tmpDir]);
+    assert.equal(found, fakeDocker);
+    const env = getDockerExecEnv({ PATH: '/usr/bin:/bin' });
+    assert.ok((env.PATH ?? '').includes('.sentinel-docker/bin'));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

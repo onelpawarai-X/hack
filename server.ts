@@ -88,6 +88,7 @@ import { SECURITY_TOOLS, getSecurityTool } from './server/securityStack/catalog.
 import { startSecurityStackLogTailer } from './server/securityStack/logTailer.ts';
 import { startSecurityStackSupervisor } from './server/securityStack/supervisor.ts';
 import { installDockerEngine } from './server/securityStack/installer.ts';
+import { setConfiguredDockerHost } from './server/securityStack/dockerEnv.ts';
 import { startDockerDaemon } from './server/securityStack/manager.ts';
 import { buildSecurityToolConfig, writeSecurityToolConfigs } from './server/securityStack/configs.ts';
 import {
@@ -1120,6 +1121,19 @@ async function startServer() {
 
   app.post('/api/security-stack/start-docker', requireAuth, async (_req, res) => {
     return res.json(await startDockerDaemon());
+  });
+
+  app.post('/api/security-stack/docker-host', requireAuth, async (req, res) => {
+    const raw = typeof req.body?.dockerHost === 'string' ? req.body.dockerHost : '';
+    const updated = setConfiguredDockerHost(raw);
+    if (!updated.ok) {
+      return res.status(400).json({ ok: false, error: updated.error });
+    }
+    return res.json({
+      ok: true,
+      dockerHost: updated.dockerHost,
+      snapshot: await getSecurityStackSnapshot(),
+    });
   });
 
   app.post('/api/security-stack/start-all', requireAuth, async (_req, res) => {

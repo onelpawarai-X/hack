@@ -179,10 +179,13 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
   const [catalog, setCatalog] = useState<SecurityToolDefinition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<SecurityToolId | null>(null);
   const [panel, setPanel] = useState<{ title: string; body: string } | null>(null);
   const [stackAction, setStackAction] = useState<string | null>(null);
+  const [dockerHostInput, setDockerHostInput] = useState('');
+  const [savingHost, setSavingHost] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -193,7 +196,11 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
         fetch('/api/security-stack/tools', { cache: 'no-store' }),
       ]);
       if (!stackRes.ok) throw new Error(`HTTP ${stackRes.status}`);
-      setSnapshot((await stackRes.json()) as SecurityStackSnapshot);
+      const nextSnapshot = (await stackRes.json()) as SecurityStackSnapshot;
+      setSnapshot(nextSnapshot);
+      if (nextSnapshot.docker.remoteHost) {
+        setDockerHostInput((prev) => prev || nextSnapshot.docker.remoteHost || '');
+      }
       if (catalogRes.ok) {
         const payload = (await catalogRes.json()) as { tools?: SecurityToolDefinition[] };
         setCatalog(payload.tools ?? []);
@@ -253,15 +260,54 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
   const runStackAction = async (kind: 'install-docker' | 'start-docker' | 'start-all') => {
     setStackAction(kind);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch(`/api/security-stack/${kind}`, { method: 'POST' });
-      const payload = (await res.json()) as { detail?: string; error?: string };
+      const payload = (await res.json()) as { ok?: boolean; detail?: string; error?: string };
       if (!res.ok) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
+      if (payload.ok === false && payload.detail) {
+        setError(payload.detail);
+      } else if (payload.detail) {
+        setNotice(payload.detail);
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed');
     } finally {
       setStackAction(null);
+    }
+  };
+
+  const saveRemoteDockerHost = async (nextValue: string) => {
+    setSavingHost(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/security-stack/docker-host', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dockerHost: nextValue }),
+      });
+      const payload = (await res.json()) as {
+        ok?: boolean;
+        dockerHost?: string | null;
+        error?: string;
+        snapshot?: SecurityStackSnapshot;
+      };
+      if (!res.ok || payload.ok === false) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
+      }
+      if (payload.snapshot) setSnapshot(payload.snapshot);
+      if (!nextValue.trim()) setDockerHostInput('');
+      setNotice(
+        payload.dockerHost
+          ? L(lang, `রিমোট Docker হস্ট সেভ হয়েছে: ${payload.dockerHost}`, `Saved remote DOCKER_HOST: ${payload.dockerHost}`)
+          : L(lang, 'রিমোট Docker হস্ট ক্লিয়ার করা হয়েছে।', 'Cleared remote DOCKER_HOST (using local socket).'),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update DOCKER_HOST');
+    } finally {
+      setSavingHost(false);
     }
   };
 
@@ -352,9 +398,11 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
             />
             Docker{' '}
             {snapshot?.docker.available
-              ? snapshot.docker.version ?? 'ready'
+              ? `${snapshot.docker.version ?? 'ready'}${snapshot.docker.composeAvailable ? ' + Compose' : ''}`
               : snapshot?.docker.cliInstalled
-                ? 'daemon stopped'
+                ? snapshot.docker.serverlessSandbox && !snapshot.docker.remoteHost
+                  ? `CLI ready${snapshot.docker.composeAvailable ? ' + Compose' : ''}`
+                  : 'daemon stopped'
                 : 'not installed'}
           </span>
           <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/5 px-2 py-0.5 text-[9px] font-semibold text-cyan-300">
@@ -363,8 +411,16 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
           <button
             type="button"
             onClick={() => void runStackAction('start-docker')}
-            disabled={stackAction !== null || Boolean(snapshot?.docker.available)}
-            title={L(lang, 'স্বয়ংক্রিয়ভাবে চলে; এটি শুধু ম্যানুয়াল ফলব্যাক।', 'Runs automatically; this is only a manual fallback.')}
+            disabled={
+              stackAction !== null ||
+              Boolean(snapshot?.docker.available) ||
+              Boolean(snapshot?.docker.serverlessSandbox && !snapshot?.docker.remoteHost)
+            }
+            title={
+              snapshot?.docker.serverlessSandbox && !snapshot?.docker.remoteHost
+                ? L(lang, 'Cloud Run gVisor লোকাল dockerd বন্ধ রাখে — রিমোট DOCKER_HOST যুক্ত করুন।', 'Cloud Run gVisor blocks local dockerd — connect a remote DOCKER_HOST.')
+                : L(lang, 'স্বয়ংক্রিয়ভাবে চলে; এটি শুধু ম্যানুয়াল ফলব্যাক।', 'Runs automatically; this is only a manual fallback.')
+            }
             className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
           >
             {stackAction === 'start-docker' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
@@ -408,15 +464,63 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
         </div>
       )}
 
+      {notice && (
+        <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+          {notice}
+        </div>
+      )}
+
       {snapshot && !snapshot.docker.available && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
-          <div className="font-semibold">
-            {L(lang, 'Docker চালু নেই — কন্টেইনার টুলগুলো এখনো চলেনি', 'Docker is not running — container tools are not running')}
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100 space-y-2">
+          <div>
+            <div className="font-semibold">
+              {snapshot.docker.cliInstalled && snapshot.docker.serverlessSandbox && !snapshot.docker.remoteHost
+                ? L(
+                    lang,
+                    'Docker CLI ও Compose v2 ইনস্টল আছে — Cloud Run স্যান্ডবক্সে রিমোট ইঞ্জিন সংযুক্ত করুন',
+                    'Docker CLI + Compose v2 installed — connect a remote Docker Engine from Cloud Run',
+                  )
+                : L(
+                    lang,
+                    'Docker ইঞ্জিন চালু নেই — কন্টেইনার টুলগুলো এখনো চলেনি',
+                    'Docker Engine is not reachable — container tools are not running',
+                  )}
+            </div>
+            <div className="mt-0.5 text-amber-200/85">{snapshot.docker.detail}</div>
+            {snapshot.docker.hint && (
+              <div className="mt-1 font-mono text-[10px] text-amber-200/70">{snapshot.docker.hint}</div>
+            )}
           </div>
-          <div className="mt-0.5 text-amber-200/80">{snapshot.docker.detail}</div>
-          {snapshot.docker.hint && (
-            <div className="mt-1 font-mono text-[10px] text-amber-200/70">{snapshot.docker.hint}</div>
-          )}
+
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-500/20">
+            <span className="text-[10px] font-mono text-amber-200/80">DOCKER_HOST</span>
+            <input
+              type="text"
+              value={dockerHostInput}
+              onChange={(event) => setDockerHostInput(event.target.value)}
+              placeholder="tcp://your-vps-ip:2376"
+              className="min-w-[220px] flex-1 rounded-md border border-amber-500/30 bg-[#05080E] px-2.5 py-1 font-mono text-[11px] text-slate-100 placeholder:text-slate-600 focus:border-cyan-400 focus:outline-none"
+            />
+            <button
+              type="button"
+              disabled={savingHost || !dockerHostInput.trim()}
+              onClick={() => void saveRemoteDockerHost(dockerHostInput)}
+              className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
+            >
+              {savingHost && <Loader2 className="h-3 w-3 animate-spin" />}
+              {L(lang, 'রিমোট ইঞ্জিন যুক্ত', 'Connect Remote')}
+            </button>
+            {snapshot.docker.remoteHost && (
+              <button
+                type="button"
+                disabled={savingHost}
+                onClick={() => void saveRemoteDockerHost('')}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-300 hover:border-slate-500 disabled:opacity-50"
+              >
+                {L(lang, 'ক্লিয়ার', 'Clear')}
+              </button>
+            )}
+          </div>
         </div>
       )}
 

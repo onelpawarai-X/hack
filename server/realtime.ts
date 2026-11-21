@@ -15,6 +15,7 @@ import type {
 } from '../src/types/realtime.ts';
 import { sessionFromCookie } from './auth.ts';
 import { scanTargetOrWeb, traceAttackerIp } from './scanner.ts';
+import { findDockerBinary, getDockerExecEnv } from './securityStack/dockerEnv.ts';
 import { isValidIpv4 } from './threatRules.ts';
 
 const ORIGIN_TTL_MS = 10 * 60 * 1000;
@@ -27,22 +28,25 @@ const TERMINAL_RATE_WINDOW_MS = 60_000;
 function ensureTerminalBin(): void {
   fs.mkdirSync(TERMINAL_BIN, { recursive: true });
   const wrapper = path.join(TERMINAL_BIN, 'docker');
-  const realDocker =
-    (process.env.PATH ?? '')
-      .split(':')
-      .filter((directory) => directory && path.resolve(directory) !== path.resolve(TERMINAL_BIN))
-      .map((directory) => path.join(directory, 'docker'))
-      .find((candidate) => fs.existsSync(candidate)) ?? '/usr/bin/docker';
+  const bundled = path.resolve(process.cwd(), '.sentinel-docker', 'bin', 'docker');
+  const fallbackDocker = findDockerBinary() ?? '/usr/bin/docker';
   const body = `#!/bin/sh
-DOCKER_BIN="${realDocker}"
-if [ ! -x "$DOCKER_BIN" ]; then
-  echo "docker: command not found at $DOCKER_BIN" >&2
+DOCKER_BIN=""
+if [ -x "${bundled}" ]; then
+  DOCKER_BIN="${bundled}"
+elif [ -x "/tmp/.sentinel-docker/bin/docker" ]; then
+  DOCKER_BIN="/tmp/.sentinel-docker/bin/docker"
+elif [ -x "${fallbackDocker}" ]; then
+  DOCKER_BIN="${fallbackDocker}"
+fi
+if [ -z "$DOCKER_BIN" ] || [ ! -x "$DOCKER_BIN" ]; then
+  echo "docker: CLI binary not found (run Setup Docker or check .sentinel-docker/bin/docker)" >&2
   exit 127
 fi
 ERR="$(mktemp)"
 "$DOCKER_BIN" "$@" 2>"$ERR"
 CODE=$?
-if [ "$CODE" -ne 0 ] && grep -qi "permission denied" "$ERR"; then
+if [ "$CODE" -ne 0 ] && [ -z "$DOCKER_HOST" ] && command -v sudo >/dev/null 2>&1 && grep -qi "permission denied" "$ERR"; then
   rm -f "$ERR"
   exec sudo -n "$DOCKER_BIN" "$@"
 fi
@@ -273,12 +277,14 @@ export function attachRealtime(httpServer: HttpServer) {
       }
 
       state.running = true;
+      ensureTerminalBin();
+      const dockerEnv = getDockerExecEnv();
       socket.emit('terminal:output', { stream: 'system', data: `\n$ ${command}\n` });
       const child = spawn('/bin/bash', ['-c', command], {
         cwd: state.cwd,
         env: {
-          ...process.env,
-          PATH: `${TERMINAL_BIN}:${process.env.PATH ?? ''}`,
+          ...dockerEnv,
+          PATH: `${TERMINAL_BIN}:${dockerEnv.PATH ?? ''}`,
           TERM: 'xterm-256color',
           PS1: '',
         },

@@ -1,6 +1,12 @@
 import type { SecurityToolId } from '../../src/types/securityStack.ts';
 import { SECURITY_TOOLS } from './catalog.ts';
-import { getDockerAvailability, getSecurityToolStatus, startDockerDaemon, startSecurityTool } from './manager.ts';
+import { ensureBundledDockerCli } from './dockerEnv.ts';
+import {
+  getDockerAvailability,
+  getSecurityToolStatus,
+  startDockerDaemon,
+  startSecurityTool,
+} from './manager.ts';
 
 const ENABLED = process.env.SENTINEL_AUTOSTART_STACK !== 'false';
 const DEFAULT_TOOLS = SECURITY_TOOLS.filter((tool) => tool.deployment !== 'appliance')
@@ -18,20 +24,47 @@ let timer: NodeJS.Timeout | null = null;
 let busy = false;
 let lastDockerAttempt = 0;
 let dockerReady = false;
+let attemptedCliBootstrap = false;
+let loggedSandboxNotice = false;
 
 async function ensureDocker(): Promise<boolean> {
-  const availability = await getDockerAvailability().catch(() => null);
+  let availability = await getDockerAvailability().catch(() => null);
   if (!availability) return false;
+
+  if ((!availability.cliInstalled || !availability.composeAvailable) && !attemptedCliBootstrap) {
+    attemptedCliBootstrap = true;
+    console.log('[security-stack] Ensuring static Docker CLI + Compose v2 binary...');
+    await ensureBundledDockerCli().catch(() => undefined);
+    availability = (await getDockerAvailability().catch(() => null)) ?? availability;
+  }
+
   if (availability.ok) {
-    if (!dockerReady) console.log('[security-stack] Docker is ready; auto-managing the security stack.');
+    if (!dockerReady) {
+      console.log(
+        `[security-stack] Docker ${availability.version ?? ''} ready; auto-managing the security stack.`.trim(),
+      );
+    }
     dockerReady = true;
+    loggedSandboxNotice = false;
     return true;
   }
+
   dockerReady = false;
   if (!availability.cliInstalled) {
     console.warn('[security-stack] Docker CLI is missing:', availability.detail);
     return false;
   }
+
+  if (availability.serverlessSandbox && !availability.remoteHost) {
+    if (!loggedSandboxNotice) {
+      loggedSandboxNotice = true;
+      console.log(
+        `[security-stack] Docker CLI ready (${availability.cliPath ?? 'bundled'}) inside serverless gVisor sandbox; built-in Node sensors active. Configure a remote DOCKER_HOST to manage external containers.`,
+      );
+    }
+    return false;
+  }
+
   if (Date.now() - lastDockerAttempt < DOCKER_RETRY_MS) return false;
   lastDockerAttempt = Date.now();
   console.log('[security-stack] Docker daemon is not reachable; starting it automatically…');

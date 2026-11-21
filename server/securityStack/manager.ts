@@ -11,6 +11,14 @@ import { SECURITY_TOOLS, getSecurityTool, toolServiceName } from './catalog.ts';
 import { db } from '../db.ts';
 import { getSecurityStackPaths, writeSecurityToolConfigs } from './configs.ts';
 
+import {
+  detectServerlessSandbox,
+  findDockerBinary,
+  getConfiguredDockerHost,
+  getDockerExecEnv,
+  probeComposeAvailable,
+} from './dockerEnv.ts';
+
 const execFileAsync = promisify(execFile);
 const paths = getSecurityStackPaths();
 
@@ -18,6 +26,11 @@ type DockerAvailability = {
   ok: boolean;
   cliInstalled: boolean;
   daemonReachable: boolean;
+  composeAvailable: boolean;
+  cliPath?: string;
+  remoteHost?: string | null;
+  serverlessSandbox?: boolean;
+  nativeFallbackActive?: boolean;
   version?: string;
   detail: string;
   hint?: string;
@@ -31,47 +44,74 @@ function errorCode(error: unknown): string {
   return error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
 }
 
-async function probeDockerInfo(useSudo: boolean): Promise<string> {
+async function probeDockerInfo(cliPath: string, useSudo: boolean): Promise<string> {
+  const env = getDockerExecEnv();
   const { stdout } = useSudo
-    ? await execFileAsync('sudo', ['-n', 'docker', 'info', '--format', '{{.ServerVersion}}'], {
+    ? await execFileAsync('sudo', ['-n', cliPath, 'info', '--format', '{{.ServerVersion}}'], {
+        env,
         timeout: 5000,
       })
-    : await execFileAsync('docker', ['info', '--format', '{{.ServerVersion}}'], { timeout: 5000 });
+    : await execFileAsync(cliPath, ['info', '--format', '{{.ServerVersion}}'], {
+        env,
+        timeout: 5000,
+      });
   return stdout.trim();
 }
 
 async function dockerAvailable(): Promise<DockerAvailability> {
-  if (!(await hasBinary('docker'))) {
+  const cliPath = findDockerBinary();
+  const remoteHost = getConfiguredDockerHost();
+  const sandbox = detectServerlessSandbox();
+
+  if (!cliPath) {
     return {
       ok: false,
       cliInstalled: false,
       daemonReachable: false,
+      composeAvailable: false,
+      remoteHost,
+      serverlessSandbox: sandbox.isServerlessSandbox,
+      nativeFallbackActive: sandbox.isServerlessSandbox,
       detail: 'Docker CLI is not installed on this host.',
-      hint: 'Install Docker Engine, then press "Start Docker".',
+      hint: 'Click "Setup Docker" to download the static Docker CLI + Compose v2 automatically.',
     };
   }
 
+  const composeAvailable = await probeComposeAvailable();
+
   let directError: unknown = null;
   try {
-    const version = await probeDockerInfo(false);
+    const version = await probeDockerInfo(cliPath, false);
     return {
       ok: true,
       cliInstalled: true,
       daemonReachable: true,
+      composeAvailable,
+      cliPath,
+      remoteHost,
+      serverlessSandbox: sandbox.isServerlessSandbox,
+      nativeFallbackActive: false,
       version,
-      detail: 'Docker daemon reachable.',
+      detail: remoteHost
+        ? `Remote Docker Engine reachable (${remoteHost}).`
+        : 'Docker daemon reachable.',
     };
   } catch (error) {
     directError = error;
   }
 
-  if (await hasBinary('sudo')) {
+  if (!remoteHost && (await hasBinary('sudo'))) {
     try {
-      const version = await probeDockerInfo(true);
+      const version = await probeDockerInfo(cliPath, true);
       return {
         ok: true,
         cliInstalled: true,
         daemonReachable: true,
+        composeAvailable,
+        cliPath,
+        remoteHost,
+        serverlessSandbox: sandbox.isServerlessSandbox,
+        nativeFallbackActive: false,
         version,
         detail: 'Docker daemon reachable via passwordless sudo.',
       };
@@ -88,8 +128,42 @@ async function dockerAvailable(): Promise<DockerAvailability> {
       ok: false,
       cliInstalled: true,
       daemonReachable: true,
+      composeAvailable,
+      cliPath,
+      remoteHost,
+      serverlessSandbox: sandbox.isServerlessSandbox,
       detail: 'Docker CLI is installed, but this user cannot access /var/run/docker.sock.',
       hint: 'Run: sudo usermod -aG docker $USER && newgrp docker. Then restart SentinelGlobe.',
+    };
+  }
+
+  if (sandbox.isServerlessSandbox && !remoteHost) {
+    return {
+      ok: false,
+      cliInstalled: true,
+      daemonReachable: false,
+      composeAvailable,
+      cliPath,
+      remoteHost: null,
+      serverlessSandbox: true,
+      nativeFallbackActive: true,
+      detail: `Docker CLI${composeAvailable ? ' + Compose v2' : ''} is installed at ${cliPath}. Local dockerd cannot run inside Cloud Run's gVisor sandbox; built-in Node sensors, honeypot decoys, and log ingest remain active.`,
+      hint: 'Connect a remote Docker Engine (e.g. tcp://your-vps:2376) above to launch Suricata/Zeek/Cowrie containers remotely, or deploy SentinelGlobe on a Linux VPS.',
+    };
+  }
+
+  if (remoteHost) {
+    return {
+      ok: false,
+      cliInstalled: true,
+      daemonReachable: false,
+      composeAvailable,
+      cliPath,
+      remoteHost,
+      serverlessSandbox: sandbox.isServerlessSandbox,
+      nativeFallbackActive: sandbox.isServerlessSandbox,
+      detail: `Docker CLI is installed, but remote Docker Engine (${remoteHost}) is unreachable: ${message}`,
+      hint: 'Verify DOCKER_HOST URL, firewall rules, and that the remote dockerd TLS/TCP socket is listening.',
     };
   }
 
@@ -98,6 +172,10 @@ async function dockerAvailable(): Promise<DockerAvailability> {
       ok: false,
       cliInstalled: true,
       daemonReachable: false,
+      composeAvailable,
+      cliPath,
+      remoteHost,
+      serverlessSandbox: false,
       detail: 'Docker CLI is installed, but the Docker daemon is not running.',
       hint: 'Press "Start Docker", or run: sudo systemctl start docker',
     };
@@ -107,21 +185,33 @@ async function dockerAvailable(): Promise<DockerAvailability> {
     ok: false,
     cliInstalled: true,
     daemonReachable: false,
+    composeAvailable,
+    cliPath,
+    remoteHost,
+    serverlessSandbox: sandbox.isServerlessSandbox,
     detail: `Docker CLI is installed, but the daemon is unavailable: ${message}`,
     hint: 'Press "Start Docker", or run: sudo systemctl start docker',
   };
 }
 
 async function docker(args: string[], timeout = 30_000): Promise<{ ok: boolean; out: string; err?: string }> {
+  const cliPath = findDockerBinary();
+  if (!cliPath) {
+    return { ok: false, out: '', err: 'Docker CLI binary is not installed.' };
+  }
+  const env = getDockerExecEnv();
   try {
-    const { stdout, stderr } = await execFileAsync('docker', args, { timeout });
+    const { stdout, stderr } = await execFileAsync(cliPath, args, { env, timeout });
     return { ok: true, out: stdout.trim(), err: stderr.trim() };
   } catch (error) {
     const message = errorText(error);
     const code = errorCode(error);
-    if (code === 'EACCES' || /permission denied/i.test(message)) {
+    if (!getConfiguredDockerHost() && (code === 'EACCES' || /permission denied/i.test(message))) {
       try {
-        const { stdout, stderr } = await execFileAsync('sudo', ['-n', 'docker', ...args], { timeout });
+        const { stdout, stderr } = await execFileAsync('sudo', ['-n', cliPath, ...args], {
+          env,
+          timeout,
+        });
         return { ok: true, out: stdout.trim(), err: stderr.trim() };
       } catch (sudoError) {
         return {
@@ -147,6 +237,19 @@ export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string
   if (!current.cliInstalled) {
     return { ok: false, detail: current.detail };
   }
+  if (current.serverlessSandbox && !current.remoteHost) {
+    return {
+      ok: false,
+      detail:
+        'Cloud Run gVisor blocks nested local dockerd daemons. Docker CLI is installed — connect a remote DOCKER_HOST or deploy on a Linux VPS.',
+    };
+  }
+  if (current.remoteHost) {
+    return {
+      ok: false,
+      detail: `Cannot start remote Docker daemon at ${current.remoteHost} locally. Start dockerd on that remote host.`,
+    };
+  }
 
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const hasSudo = !isRoot && (await hasBinary('sudo'));
@@ -164,6 +267,7 @@ export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string
     ['systemctl', ['start', 'docker']],
     ['service', ['docker', 'start']],
   ] as const) {
+    if (!(await hasBinary(command))) continue;
     const output = isRoot
       ? await run(command, [...args])
       : hasSudo
@@ -176,7 +280,7 @@ export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string
     }
   }
 
-  if (isRoot || hasSudo) {
+  if ((isRoot || hasSudo) && (await hasBinary('dockerd'))) {
     const logPath = path.resolve(paths.logs, 'dockerd.log');
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     const fd = fs.openSync(logPath, 'a');
@@ -201,7 +305,7 @@ export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string
 
   return {
     ok: false,
-    detail: `Docker CLI is installed, but the daemon could not be started. ${current.detail}`,
+    detail: `Docker CLI is installed, but the local daemon (dockerd) is not installed or could not be started. ${current.hint ?? ''}`.trim(),
   };
 }
 
@@ -227,8 +331,11 @@ function ensureLogPlaceholders(): void {
 }
 
 async function hasBinary(binary: string): Promise<boolean> {
+  if (binary === 'docker') {
+    return Boolean(findDockerBinary());
+  }
   try {
-    await execFileAsync('which', [binary], { timeout: 3000 });
+    await execFileAsync('which', [binary], { env: getDockerExecEnv(), timeout: 3000 });
     return true;
   } catch {
     return false;
@@ -318,7 +425,9 @@ export async function getSecurityToolStatus(id: SecurityToolId): Promise<Securit
     state: dockerState.ok ? 'stopped' : 'unavailable',
     detail: dockerState.ok
       ? `${tool.name} container is not running. Start it from the Security Stack panel.`
-      : dockerState.detail,
+      : dockerState.serverlessSandbox && dockerState.cliInstalled && !dockerState.remoteHost
+        ? 'Container engine requires remote DOCKER_HOST or VPS dockerd (CLI + Compose ready).'
+        : dockerState.detail,
   };
 }
 
@@ -365,6 +474,11 @@ export async function getSecurityStackSnapshot(): Promise<SecurityStackSnapshot>
       available: dockerState.ok,
       cliInstalled: dockerState.cliInstalled,
       daemonReachable: dockerState.daemonReachable,
+      composeAvailable: dockerState.composeAvailable,
+      cliPath: dockerState.cliPath,
+      remoteHost: dockerState.remoteHost,
+      serverlessSandbox: dockerState.serverlessSandbox,
+      nativeFallbackActive: dockerState.nativeFallbackActive,
       version: dockerState.version,
       detail: dockerState.detail,
       hint: dockerState.hint,

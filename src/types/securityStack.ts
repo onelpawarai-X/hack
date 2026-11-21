@@ -80,6 +80,11 @@ export interface SecurityStackSnapshot {
     available: boolean;
     cliInstalled?: boolean;
     daemonReachable?: boolean;
+    composeAvailable?: boolean;
+    cliPath?: string;
+    remoteHost?: string | null;
+    serverlessSandbox?: boolean;
+    nativeFallbackActive?: boolean;
     version?: string;
     detail: string;
     hint?: string;
