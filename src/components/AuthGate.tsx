@@ -14,6 +14,8 @@ import { useAuth } from '../hooks/useAuth.tsx';
 
 type Lang = 'bn' | 'en';
 
+const OPERATOR_USERNAME = 'zyraxon';
+
 const COPY = {
   bn: {
     brand: 'SentinelGlobe',
@@ -32,7 +34,7 @@ const COPY = {
     ssoHint: 'SSO কনফিগার করা আছে',
     noSso: 'SSO কনফিগার করা নেই',
     mismatch: 'দুটি পাসওয়ার্ড মিলছে না।',
-    short: 'পাসওয়ার্ড অন্তত ৮ অক্ষরের হতে হবে।',
+    short: 'পাসওয়ার্ড অন্তত ৭ অক্ষরের হতে হবে।',
     localOnly: 'লোকাল অ্যাডমিন',
     secure: 'HttpOnly সেশন · scrypt হ্যাশ · রেট লিমিটেড লগইন',
     warning:
@@ -58,7 +60,7 @@ const COPY = {
     ssoHint: 'SSO is configured',
     noSso: 'SSO is not configured',
     mismatch: 'The passwords do not match.',
-    short: 'Password must be at least 8 characters.',
+    short: 'Password must be at least 7 characters.',
     localOnly: 'Local admin',
     secure: 'HttpOnly session · scrypt hash · rate-limited login',
     warning: 'This is a security console. Unauthorized access or scanning is illegal.',
@@ -68,11 +70,13 @@ const COPY = {
   },
 } as const;
 
+const L = (lang: Lang, bn: string, en: string) => (lang === 'bn' ? bn : en);
+
 function AuthScreen({ lang, onLang }: { lang: Lang; onLang: (lang: Lang) => void }) {
   const { status, error, login, setup, clearError } = useAuth();
   const copy = COPY[lang];
   const setupMode = Boolean(status?.setupRequired);
-  const [username, setUsername] = useState(setupMode ? 'admin' : '');
+  const username = OPERATOR_USERNAME;
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -83,7 +87,7 @@ function AuthScreen({ lang, onLang }: { lang: Lang; onLang: (lang: Lang) => void
     event.preventDefault();
     setLocalError(null);
     clearError();
-    if (password.length < 8) {
+    if (password.length < 7) {
       setLocalError(copy.short);
       return;
     }
@@ -183,10 +187,10 @@ function AuthScreen({ lang, onLang }: { lang: Lang; onLang: (lang: Lang) => void
               <span className="text-[11px] font-semibold text-slate-300">{copy.username}</span>
               <input
                 value={username}
-                onChange={(event) => setUsername(event.target.value)}
+                readOnly
+                aria-readonly="true"
                 autoComplete="username"
-                className="mt-1 w-full rounded-lg bg-[#04060A] border border-slate-700 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/60"
-                placeholder="admin"
+                className="mt-1 w-full cursor-not-allowed rounded-lg border border-slate-800 bg-[#080B12] px-3 py-2.5 text-sm text-slate-400 focus:outline-none"
               />
             </label>
 
@@ -197,9 +201,10 @@ function AuthScreen({ lang, onLang }: { lang: Lang; onLang: (lang: Lang) => void
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   type={showPassword ? 'text' : 'password'}
-                  autoComplete={setupMode ? 'new-password' : 'current-password'}
+                  autoComplete="new-password"
+                  data-lpignore="true"
                   className="w-full rounded-lg bg-[#04060A] border border-slate-700 px-3 py-2.5 pr-20 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500/60"
-                  placeholder="••••••••"
+                  placeholder={L(lang, 'পাসওয়ার্ড লিখুন', 'Enter password')}
                 />
                 <button
                   type="button"

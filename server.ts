@@ -39,6 +39,8 @@ import {
   createSession,
   destroySession,
   ensureEnvAdmin,
+  ensureDefaultOperator,
+  MIN_PASSWORD_LENGTH,
   hasAdminUser,
   requireAuth,
   sessionFromRequest,
@@ -152,6 +154,7 @@ async function startServer() {
     console.warn('[security-stack] config generation failed:', getErrorMessage(err));
   }
   ensureEnvAdmin();
+  ensureDefaultOperator();
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -173,8 +176,8 @@ async function startServer() {
     }
     const password = String(req.body?.password ?? '');
     const username = String(req.body?.username ?? 'admin').trim() || 'admin';
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
     }
     try {
       const user = createAdminUser(username, password);

