@@ -78,8 +78,11 @@ export interface SecurityStackSnapshot {
   generatedAt: string;
   docker: {
     available: boolean;
+    cliInstalled?: boolean;
+    daemonReachable?: boolean;
     version?: string;
     detail: string;
+    hint?: string;
   };
   tools: SecurityToolStatus[];
   summary: SecurityStackSummary;

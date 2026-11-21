@@ -85,6 +85,22 @@ export interface DefenseAlertPayload {
   };
 }
 
+export interface TerminalOutputPayload {
+  stream: 'stdout' | 'stderr' | 'system';
+  data: string;
+}
+
+export interface TerminalExitPayload {
+  code: number | null;
+  cwd: string;
+}
+
+export interface TerminalExecAck {
+  ok: boolean;
+  cwd?: string;
+  error?: string;
+}
+
 export interface ServerToClientEvents {
   'server:ready': (payload: { at: string; scannerOrigin: ScannerOrigin | null }) => void;
   'scan:log': (event: ScanLogEvent) => void;
@@ -94,9 +110,15 @@ export interface ServerToClientEvents {
   'scan:error': (payload: ScanErrorPayload) => void;
   'attack:event': (event: AttackEvent) => void;
   'defense:alert': (payload: DefenseAlertPayload) => void;
+  'terminal:output': (payload: TerminalOutputPayload) => void;
+  'terminal:exit': (payload: TerminalExitPayload) => void;
 }
 
 export interface ClientToServerEvents {
   'scan:start': (payload: ScanStartPayload, ack?: (res: ScanSocketAck) => void) => void;
   'scanner:origin': (ack?: (origin: ScannerOrigin | null) => void) => void;
+  'terminal:exec': (
+    payload: { command: string },
+    ack?: (res: TerminalExecAck) => void,
+  ) => void;
 }

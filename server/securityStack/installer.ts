@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getDockerAvailability } from './manager.ts';
+import { getDockerAvailability, startDockerDaemon } from './manager.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,17 +19,32 @@ export async function installDockerEngine(): Promise<{ ok: boolean; detail: stri
     return { ok: true, detail: `Docker ${current.version ?? ''} is already installed and reachable.` };
   }
 
+  if (current.cliInstalled) {
+    const started = await startDockerDaemon();
+    return started.ok
+      ? { ok: true, detail: started.detail }
+      : { ok: false, detail: started.detail };
+  }
+
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const hasSudo = !isRoot && (await run('which', ['sudo'], 3000)).ok;
+  if (!isRoot && !hasSudo) {
+    return {
+      ok: false,
+      detail:
+        'Docker CLI is not installed, and this process has no root or sudo access. Install Docker Engine as root, then press "Start Docker".',
+    };
+  }
+
   const prefix = isRoot ? [] : ['-n'];
   const sudo = isRoot ? null : 'sudo';
-
   const update = sudo
     ? await run(sudo, [...prefix, 'apt-get', 'update'])
     : await run('apt-get', ['update']);
   if (!update.ok) {
     return {
       ok: false,
-      detail: `Cannot run apt-get update. Install Docker manually with: curl -fsSL https://get.docker.com | sh (${update.out})`,
+      detail: `Docker CLI is missing and apt-get update failed. Install Docker Engine manually as root, then restart SentinelGlobe. (${update.out})`,
     };
   }
 
@@ -43,17 +58,8 @@ export async function installDockerEngine(): Promise<{ ok: boolean; detail: stri
     };
   }
 
-  if (sudo) {
-    await run(sudo, [...prefix, 'systemctl', 'enable', '--now', 'docker'], 60_000);
-  } else {
-    await run('systemctl', ['enable', '--now', 'docker'], 60_000);
-  }
-
-  const after = await getDockerAvailability();
-  return after.ok
-    ? { ok: true, detail: `Docker ${after.version ?? ''} installed and reachable.` }
-    : {
-        ok: false,
-        detail: `Docker was installed but the daemon is not reachable. Start it with: sudo dockerd (${after.detail})`,
-      };
+  const started = await startDockerDaemon();
+  return started.ok
+    ? { ok: true, detail: `Docker installed. ${started.detail}` }
+    : { ok: false, detail: `Docker was installed but the daemon did not start. ${started.detail}` };
 }

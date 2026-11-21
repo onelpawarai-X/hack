@@ -250,7 +250,7 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
     return groups;
   }, [catalog, snapshot]);
 
-  const runStackAction = async (kind: 'install-docker' | 'start-all') => {
+  const runStackAction = async (kind: 'install-docker' | 'start-docker' | 'start-all') => {
     setStackAction(kind);
     setError(null);
     try {
@@ -327,7 +327,7 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
             {L(
               lang,
               'Suricata, Zeek, Wazuh, Fail2Ban, Cowrie, T-Pot, OpenCanary, HFish, Conpot , Beelzebub — সব বাস্তব টুল, বাস্তব কনফিগ, বাস্তব লগ ইনজেস্ট।',
-              'Suricata, Zeek, Wazuh, Fail2Ban, Cowrie, T-Pot, OpenCanary, HFish, Conpot , Beelzebub — real tools, real configs, real log ingest.',
+              'Suricata, Zeek, Wazuh, Fail2Ban, Cowrie, T-Pot, OpenCanary, HFish, Conpot , Beelzebub — real tools, real configs, real log ingest. Docker ও চলমান টুলগুলো প্রতি ৩০ সেকেন্ডে অটো-চেক হয়; নিচের বাটনগুলো শুধু ম্যানুয়াল ফলব্যাক।',
             )}
           </p>
         </div>
@@ -336,12 +336,42 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
               snapshot?.docker.available
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                : 'border-red-500/40 bg-red-500/10 text-red-300'
+                : snapshot?.docker.cliInstalled
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                  : 'border-red-500/40 bg-red-500/10 text-red-300'
             }`}
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${snapshot?.docker.available ? 'bg-emerald-400' : 'bg-red-500'}`} />
-            Docker {snapshot?.docker.available ? snapshot.docker.version ?? 'ready' : 'offline'}
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                snapshot?.docker.available
+                  ? 'bg-emerald-400'
+                  : snapshot?.docker.cliInstalled
+                    ? 'bg-amber-400'
+                    : 'bg-red-500'
+              }`}
+            />
+            Docker{' '}
+            {snapshot?.docker.available
+              ? snapshot.docker.version ?? 'ready'
+              : snapshot?.docker.cliInstalled
+                ? 'daemon stopped'
+                : 'not installed'}
           </span>
+          <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/5 px-2 py-0.5 text-[9px] font-semibold text-cyan-300">
+            <RefreshCw className="h-2.5 w-2.5" /> {L(lang, 'অটো', 'AUTO')}
+          </span>
+          <button
+            type="button"
+            onClick={() => void runStackAction('start-docker')}
+            disabled={stackAction !== null || Boolean(snapshot?.docker.available)}
+            title={L(lang, 'স্বয়ংক্রিয়ভাবে চলে; এটি শুধু ম্যানুয়াল ফলব্যাক।', 'Runs automatically; this is only a manual fallback.')}
+            className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            {stackAction === 'start-docker' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+            {snapshot?.docker.available
+              ? L(lang, 'Docker চলছে', 'Docker running')
+              : L(lang, 'Docker চালু', 'Start Docker')}
+          </button>
           <button
             type="button"
             onClick={() => void runStackAction('install-docker')}
@@ -358,7 +388,7 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
             className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
           >
             {stackAction === 'start-all' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-            {L(lang, 'সব চালু', 'Start all')}
+            {L(lang, 'সব চালু (ব্যাকআপ)', 'Start all (fallback)')}
           </button>
           <button
             type="button"
@@ -384,7 +414,9 @@ export function SecurityStackPanel({ lang }: SecurityStackPanelProps) {
             {L(lang, 'Docker চালু নেই — কন্টেইনার টুলগুলো এখনো চলেনি', 'Docker is not running — container tools are not running')}
           </div>
           <div className="mt-0.5 text-amber-200/80">{snapshot.docker.detail}</div>
-          <div className="mt-1 font-mono text-[10px] text-amber-200/70">sudo dockerd &amp;&amp; sudo docker ps</div>
+          {snapshot.docker.hint && (
+            <div className="mt-1 font-mono text-[10px] text-amber-200/70">{snapshot.docker.hint}</div>
+          )}
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import { RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { Camera, RefreshCw, SlidersHorizontal, SquareTerminal } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AttackerDossierPanel } from './components/AttackerDossierPanel';
 import { AttackerInspector } from './components/AttackerInspector';
@@ -18,6 +18,7 @@ import { LiveThreatMap } from './components/LiveThreatMap';
 import { RadarCanvas } from './components/RadarCanvas';
 import { ScanProgressBar } from './components/ScanProgressBar';
 import { SecurityStackPanel } from './components/SecurityStackPanel';
+import { SystemTerminal } from './components/SystemTerminal';
 import { SeverityCharts } from './components/SeverityCharts';
 import { TargetScannerPanel } from './components/TargetScannerPanel';
 import { ThreatFeedsMatrix, type MatrixTab } from './components/ThreatFeedsMatrix';
@@ -570,6 +571,24 @@ function AppDashboard() {
 
             <button
               type="button"
+              onClick={() => document.getElementById('global-cameras')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-200 text-[11px] sm:text-xs font-semibold hover:bg-cyan-500/20 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">{lang === 'bn' ? 'ক্যামেরা' : 'Cameras'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => document.getElementById('system-terminal')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-[11px] sm:text-xs font-semibold hover:bg-emerald-500/20 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <SquareTerminal className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">{lang === 'bn' ? 'টার্মিনাল' : 'Terminal'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setControlOpen(true)}
               className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-200 text-[11px] sm:text-xs font-semibold hover:bg-cyan-500/20 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
@@ -723,16 +742,35 @@ function AppDashboard() {
           notice={shieldNotice}
         />
 
-        <GlobalCameraSection
-          lang={lang}
-          focus={
-            selectedNode
-              ? { lat: selectedNode.lat, lon: selectedNode.lon, label: `${selectedNode.ip} · ${selectedNode.city}` }
-              : null
-          }
-        />
+        <section
+          id="global-cameras"
+          aria-label={lang === 'bn' ? 'ক্যামেরা সেকশন' : 'Camera section'}
+          className="scroll-mt-24 space-y-3 border-t-2 border-cyan-500/30 pt-6"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-200">
+              <Camera className="h-3 w-3" />
+              {lang === 'bn' ? 'ক্যামেরা সেকশন' : 'Camera section'}
+            </span>
+            <span className="text-[10px] text-slate-500">
+              {lang === 'bn'
+                ? 'আলাদা ওএসআইএনটি সেকশন — শুধু পাবলিক ও অপারেটর-অনুমোদিত স্ট্রিম'
+                : 'Separate OSINT section — public and operator-authorised streams only'}
+            </span>
+          </div>
+          <GlobalCameraSection
+            lang={lang}
+            focus={
+              selectedNode
+                ? { lat: selectedNode.lat, lon: selectedNode.lon, label: `${selectedNode.ip} · ${selectedNode.city}` }
+                : null
+            }
+          />
+        </section>
 
         <SecurityStackPanel lang={lang} />
+
+        <SystemTerminal lang={lang} />
 
         <AttackerDossierPanel
           lang={lang}

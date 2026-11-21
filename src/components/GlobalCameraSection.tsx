@@ -67,6 +67,7 @@ function HlsVideo({ src, title }: { src: string; title: string }) {
     <video
       ref={videoRef}
       controls
+      autoPlay
       muted
       playsInline
       className="h-64 w-full rounded-lg border border-slate-800 bg-black"
@@ -77,72 +78,157 @@ function HlsVideo({ src, title }: { src: string; title: string }) {
 
 function CameraPreview({ camera, lang }: { camera: GlobalCamera; lang: Language }) {
   const [tick, setTick] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [src, setSrc] = useState('');
+  const [failed, setFailed] = useState(false);
+
+  const withCacheBust = useCallback(
+    (url: string, stamp: number) => {
+      const separator = url.includes('?') ? '&' : '?';
+      return `${url}${separator}t=${stamp}`;
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (camera.protocol !== 'image' || !camera.streamUrl) return;
-    const timer = window.setInterval(() => setTick((value) => value + 1), 15_000);
+    setFailed(false);
+    setTick(0);
+    setSrc(camera.streamUrl ? withCacheBust(camera.streamUrl, Date.now()) : '');
+  }, [camera.id, camera.streamUrl, withCacheBust]);
+
+  useEffect(() => {
+    if (camera.protocol !== 'image' || !camera.streamUrl || !autoRefresh) return;
+    const timer = window.setInterval(() => setTick((value) => value + 1), 20_000);
     return () => window.clearInterval(timer);
-  }, [camera.protocol, camera.streamUrl]);
+  }, [camera.protocol, camera.streamUrl, autoRefresh]);
+
+  useEffect(() => {
+    if (camera.protocol !== 'image' || !camera.streamUrl || tick === 0) return;
+    const next = withCacheBust(camera.streamUrl, Date.now());
+    const image = new Image();
+    image.onload = () => {
+      setFailed(false);
+      setSrc(next);
+    };
+    image.onerror = () => setFailed(true);
+    image.src = next;
+  }, [camera.protocol, camera.streamUrl, tick, withCacheBust]);
+
+  const badge = (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span
+        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
+          camera.protocol === 'hls' || camera.protocol === 'mjpeg' || camera.protocol === 'iframe'
+            ? 'border-red-500/40 bg-red-500/10 text-red-200'
+            : 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
+        }`}
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-current" />
+        {camera.protocol === 'hls' || camera.protocol === 'mjpeg' || camera.protocol === 'iframe'
+          ? 'LIVE'
+          : 'SNAPSHOT'}
+      </span>
+      {camera.protocol === 'image' && (
+        <button
+          type="button"
+          onClick={() => setAutoRefresh((value) => !value)}
+          className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold ${
+            autoRefresh
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+              : 'border-slate-700 bg-slate-900 text-slate-400'
+          }`}
+        >
+          {autoRefresh
+            ? L10N(lang, 'অটো রিফ্রেশ: চালু', 'Auto refresh: on')
+            : L10N(lang, 'অটো রিফ্রেশ: বন্ধ', 'Auto refresh: off')}
+        </button>
+      )}
+    </div>
+  );
 
   if (!camera.streamUrl) {
     return (
-      <div className="rounded-lg border border-slate-800 bg-[#02060c] p-3 text-[10px] text-slate-400">
-        {L10N(
-          lang,
-          'এই পাবলিক ক্যামেরার সরাসরি স্ট্রিম OSM-এ নেই। নিচের OSM লিংক থেকে মালিক/অপারেটরের তথ্য দেখুন।',
-          'This public camera has no direct stream in OSM. Open the OSM link for owner/operator details.',
-        )}
+      <div className="space-y-2">
+        {badge}
+        <div className="rounded-lg border border-slate-800 bg-[#02060c] p-3 text-[10px] text-slate-400">
+          {L10N(
+            lang,
+            'এই পাবলিক ক্যামেরার সরাসরি স্ট্রিম OSM-এ নেই। নিচের OSM লিংক থেকে মালিক/অপারেটরের তথ্য দেখুন।',
+            'This public camera has no direct stream in OSM. Open the OSM link for owner/operator details.',
+          )}
+        </div>
       </div>
     );
   }
   if (camera.protocol === 'image') {
-    const separator = camera.streamUrl.includes('?') ? '&' : '?';
     return (
-      <img
-        key={`${camera.streamUrl}-${tick}`}
-        src={`${camera.streamUrl}${separator}t=${Date.now()}`}
-        alt={camera.name}
-        className="h-64 w-full rounded-lg border border-slate-800 bg-black object-cover"
-        loading="lazy"
-        referrerPolicy="no-referrer"
-      />
+      <div className="space-y-2">
+        {badge}
+        {failed && (
+          <p className="text-[9px] text-amber-300">
+            {L10N(lang, 'স্ন্যাপশট লোড হয়নি। অপারেটর হয়তো ফিড বন্ধ করেছে।', 'Snapshot did not load. The operator may have stopped the feed.')}
+          </p>
+        )}
+        <img
+          src={src}
+          alt={camera.name}
+          onError={() => setFailed(true)}
+          className="h-64 w-full rounded-lg border border-slate-800 bg-black object-contain"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
+      </div>
     );
   }
   if (camera.protocol === 'iframe') {
     return (
-      <iframe
-        title={camera.name}
-        src={camera.streamUrl}
-        className="h-64 w-full rounded-lg border border-slate-800 bg-black"
-        referrerPolicy="no-referrer"
-        sandbox="allow-scripts allow-same-origin"
-      />
+      <div className="space-y-2">
+        {badge}
+        <iframe
+          title={camera.name}
+          src={camera.streamUrl}
+          className="h-64 w-full rounded-lg border border-slate-800 bg-black"
+          referrerPolicy="no-referrer"
+          sandbox="allow-scripts allow-same-origin"
+        />
+      </div>
     );
   }
   if (camera.protocol === 'hls') {
-    return <HlsVideo key={camera.streamUrl} src={camera.streamUrl} title={camera.name} />;
+    return (
+      <div className="space-y-2">
+        {badge}
+        <HlsVideo key={camera.streamUrl} src={camera.streamUrl} title={camera.name} />
+      </div>
+    );
   }
   if (camera.protocol === 'mjpeg') {
     return (
-      <video
-        key={camera.streamUrl}
-        src={camera.streamUrl}
-        controls
-        muted
-        playsInline
-        className="h-64 w-full rounded-lg border border-slate-800 bg-black"
-      />
+      <div className="space-y-2">
+        {badge}
+        <img
+          src={camera.streamUrl}
+          alt={camera.name}
+          onError={() => setFailed(true)}
+          className="h-64 w-full rounded-lg border border-slate-800 bg-black object-contain"
+          referrerPolicy="no-referrer"
+        />
+      </div>
     );
   }
   return (
-    <a
-      href={camera.streamUrl}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-[11px] font-semibold text-cyan-200"
-    >
-      <Video className="h-3.5 w-3.5" />
-      {L10N(lang, 'পাবলিক স্ট্রিম খুলুন', 'Open public stream')}
-    </a>
+    <div className="space-y-2">
+      {badge}
+      <a
+        href={camera.streamUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-[11px] font-semibold text-cyan-200"
+      >
+        <Video className="h-3.5 w-3.5" />
+        {L10N(lang, 'পাবলিক স্ট্রিম খুলুন', 'Open public stream')}
+      </a>
+    </div>
   );
 }
 
@@ -156,6 +242,8 @@ export function GlobalCameraSection({
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
+  const loadTimerRef = useRef<number | null>(null);
+  const suppressMoveRef = useRef(false);
   const [cameras, setCameras] = useState<GlobalCamera[]>([]);
   const [selected, setSelected] = useState<GlobalCamera | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -167,7 +255,6 @@ export function GlobalCameraSection({
     if (!map) return;
     const bounds = map.getBounds();
     setLoading(true);
-    setStatus(null);
     try {
       const params = new URLSearchParams({
         south: String(bounds.getSouth()),
@@ -177,31 +264,52 @@ export function GlobalCameraSection({
       });
       const center = bounds.getCenter();
       const loadOsm = async (): Promise<CameraResponse> => {
-        const direct = await fetch(`/api/cameras/osm-bbox?${params.toString()}`, {
-          cache: 'no-store',
-        });
-        const payload = (await direct.json().catch(() => null)) as CameraResponse | null;
-        return payload ?? {
-          ok: false,
-          cameras: [],
-          fetchedAt: new Date().toISOString(),
-          error: `OSM HTTP ${direct.status}`,
-        };
+        try {
+          const direct = await fetch(`/api/cameras/osm-bbox?${params.toString()}`, {
+            cache: 'no-store',
+          });
+          const payload = (await direct.json().catch(() => null)) as CameraResponse | null;
+          return payload ?? {
+            ok: false,
+            cameras: [],
+            fetchedAt: new Date().toISOString(),
+            error: `OSM HTTP ${direct.status}`,
+          };
+        } catch {
+          return {
+            ok: false,
+            cameras: [],
+            fetchedAt: new Date().toISOString(),
+            error: 'OSM request failed',
+          };
+        }
       };
-      const [osmPayload, feedPayload] = await Promise.all([
-        loadOsm(),
-        fetch(`/api/cameras/public-nearby?lat=${center.lat}&lon=${center.lng}&radius=80`, {
-          cache: 'no-store',
-        }).then((response) => response.json().catch(() => ({ cameras: [] })) as Promise<CameraResponse>),
-      ]);
+      const loadFeeds = async (): Promise<CameraResponse> => {
+        try {
+          const response = await fetch(
+            `/api/cameras/public-nearby?lat=${center.lat}&lon=${center.lng}&radius=80`,
+            { cache: 'no-store' },
+          );
+          const payload = (await response.json().catch(() => null)) as CameraResponse | null;
+          return payload ?? { ok: false, cameras: [], fetchedAt: new Date().toISOString() };
+        } catch {
+          return { ok: false, cameras: [], fetchedAt: new Date().toISOString() };
+        }
+      };
+      const [osmPayload, feedPayload] = await Promise.all([loadOsm(), loadFeeds()]);
       const merged = [...(osmPayload.cameras ?? []), ...(feedPayload.cameras ?? [])]
         .filter((camera, index, list) => list.findIndex((item) => item.id === camera.id) === index)
-        .sort((a, b) => a.distanceKm - b.distanceKm);
+        .sort((a, b) => a.distanceKm - b.distanceKm)
+        .slice(0, 80);
       setCameras(merged);
       setStatus(
         merged.length === 0
           ? L10N(lang, 'এই এলাকায় কোনো পাবলিক ক্যামেরা পাওয়া যায়নি। জুম করুন বা অন্য জায়গায় যান।', 'No public cameras in this area. Zoom in or move the map.')
-          : L10N(lang, `${merged.length}টি পাবলিক ক্যামেরা পাওয়া গেছে।`, `${merged.length} public camera(s) found.`),
+          : L10N(
+              lang,
+              `${merged.length}টি নিকটতম পাবলিক ক্যামেরা দেখানো হচ্ছে।`,
+              `Showing the ${merged.length} nearest public camera(s).`,
+            ),
       );
     } catch (error) {
       setCameras([]);
@@ -226,26 +334,40 @@ export function GlobalCameraSection({
     const markers = L.layerGroup().addTo(map);
     mapRef.current = map;
     markersRef.current = markers;
-    map.on('moveend', () => void load());
+    const scheduleLoad = () => {
+      if (suppressMoveRef.current) return;
+      if (loadTimerRef.current !== null) window.clearTimeout(loadTimerRef.current);
+      loadTimerRef.current = window.setTimeout(() => void load(), 450);
+    };
+    map.on('moveend', scheduleLoad);
     window.setTimeout(() => void load(), 600);
     return () => {
+      if (loadTimerRef.current !== null) window.clearTimeout(loadTimerRef.current);
       map.remove();
       mapRef.current = null;
       markersRef.current = null;
     };
   }, [load]);
 
+  const focusLat = focus?.lat;
+  const focusLon = focus?.lon;
+  const focusLabel = focus?.label;
+
   useEffect(() => {
-    if (!focus || !mapRef.current) return;
-    mapRef.current.setView([focus.lat, focus.lon], 13);
+    if (focusLat === undefined || focusLon === undefined || !mapRef.current) return;
+    suppressMoveRef.current = true;
+    mapRef.current.setView([focusLat, focusLon], 13);
+    window.setTimeout(() => {
+      suppressMoveRef.current = false;
+    }, 900);
     setStatus(
       L10N(
         lang,
-        `${focus.label}-এর আশেপাশের পাবলিক ক্যামেরা লোড হচ্ছে…`,
-        `Loading public cameras near ${focus.label}…`,
+        `${focusLabel ?? ''}-এর আশেপাশের পাবলিক ক্যামেরা লোড হচ্ছে…`,
+        `Loading public cameras near ${focusLabel ?? ''}…`,
       ),
     );
-  }, [focus, lang]);
+  }, [focusLat, focusLon, focusLabel, lang]);
 
   useEffect(() => {
     const markers = markersRef.current;
@@ -269,7 +391,11 @@ export function GlobalCameraSection({
 
   useEffect(() => {
     if (selectedPosition && mapRef.current) {
+      suppressMoveRef.current = true;
       mapRef.current.flyTo(selectedPosition, Math.max(mapRef.current.getZoom(), 14), { duration: 0.8 });
+      window.setTimeout(() => {
+        suppressMoveRef.current = false;
+      }, 1200);
     }
   }, [selectedPosition]);
 
@@ -366,6 +492,8 @@ export function GlobalCameraSection({
           ['Dhaka', 23.8103, 90.4125],
           ['London', 51.5072, -0.1276],
           ['New York', 40.7128, -74.006],
+          ['Los Angeles', 34.0522, -118.2437],
+          ['San Francisco', 37.7749, -122.4194],
           ['Tokyo', 35.6762, 139.6503],
           ['Dubai', 25.2048, 55.2708],
           ['Singapore', 1.3521, 103.8198],
@@ -420,7 +548,6 @@ export function GlobalCameraSection({
         </div>
 
         <div className="space-y-2">
-          <div ref={mapElementRef} className="h-[520px] w-full rounded-lg border border-slate-800" />
           {selected && (
             <div className="rounded-lg border border-slate-800 bg-[#04060A] p-3 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -442,6 +569,8 @@ export function GlobalCameraSection({
               </p>
             </div>
           )}
+
+          <div ref={mapElementRef} className="h-[520px] w-full rounded-lg border border-slate-800" />
         </div>
       </div>
     </section>

@@ -88,6 +88,7 @@ import { SECURITY_TOOLS, getSecurityTool } from './server/securityStack/catalog.
 import { startSecurityStackLogTailer } from './server/securityStack/logTailer.ts';
 import { startSecurityStackSupervisor } from './server/securityStack/supervisor.ts';
 import { installDockerEngine } from './server/securityStack/installer.ts';
+import { startDockerDaemon } from './server/securityStack/manager.ts';
 import { buildSecurityToolConfig, writeSecurityToolConfigs } from './server/securityStack/configs.ts';
 import {
   ingestSecurityStackPayload,
@@ -1115,6 +1116,10 @@ async function startServer() {
   app.post('/api/security-stack/install-docker', requireAuth, async (_req, res) => {
     const result = await installDockerEngine();
     return res.status(result.ok ? 200 : 502).json(result);
+  });
+
+  app.post('/api/security-stack/start-docker', requireAuth, async (_req, res) => {
+    return res.json(await startDockerDaemon());
   });
 
   app.post('/api/security-stack/start-all', requireAuth, async (_req, res) => {

@@ -13,3 +13,5 @@ coverage/
 security-stack/logs/
 data/sentinel.db*
 data/enforcement/
+
+data/terminal/

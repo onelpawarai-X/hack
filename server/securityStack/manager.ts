@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -14,34 +14,102 @@ import { getSecurityStackPaths, writeSecurityToolConfigs } from './configs.ts';
 const execFileAsync = promisify(execFile);
 const paths = getSecurityStackPaths();
 
-async function dockerAvailable(): Promise<{ ok: boolean; version?: string; detail: string }> {
+type DockerAvailability = {
+  ok: boolean;
+  cliInstalled: boolean;
+  daemonReachable: boolean;
+  version?: string;
+  detail: string;
+  hint?: string;
+};
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+}
+
+async function probeDockerInfo(useSudo: boolean): Promise<string> {
+  const { stdout } = useSudo
+    ? await execFileAsync('sudo', ['-n', 'docker', 'info', '--format', '{{.ServerVersion}}'], {
+        timeout: 5000,
+      })
+    : await execFileAsync('docker', ['info', '--format', '{{.ServerVersion}}'], { timeout: 5000 });
+  return stdout.trim();
+}
+
+async function dockerAvailable(): Promise<DockerAvailability> {
+  if (!(await hasBinary('docker'))) {
+    return {
+      ok: false,
+      cliInstalled: false,
+      daemonReachable: false,
+      detail: 'Docker CLI is not installed on this host.',
+      hint: 'Install Docker Engine, then press "Start Docker".',
+    };
+  }
+
+  let directError: unknown = null;
   try {
-    const { stdout } = await execFileAsync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-      timeout: 5000,
-    });
-    return { ok: true, version: stdout.trim(), detail: 'Docker daemon reachable.' };
+    const version = await probeDockerInfo(false);
+    return {
+      ok: true,
+      cliInstalled: true,
+      daemonReachable: true,
+      version,
+      detail: 'Docker daemon reachable.',
+    };
   } catch (error) {
+    directError = error;
+  }
+
+  if (await hasBinary('sudo')) {
     try {
-      const { stdout } = await execFileAsync(
-        'sudo',
-        ['-n', 'docker', 'info', '--format', '{{.ServerVersion}}'],
-        { timeout: 5000 },
-      );
+      const version = await probeDockerInfo(true);
       return {
         ok: true,
-        version: stdout.trim(),
+        cliInstalled: true,
+        daemonReachable: true,
+        version,
         detail: 'Docker daemon reachable via passwordless sudo.',
       };
-    } catch (sudoError) {
-      return {
-        ok: false,
-        detail:
-          error instanceof Error && 'code' in error && error.code === 'ENOENT'
-            ? 'Docker CLI is not installed.'
-            : `Docker daemon unavailable: ${sudoError instanceof Error ? sudoError.message : 'unknown error'}`,
-      };
+    } catch {
+      // Fall through to the actionable error below.
     }
   }
+
+  const message = errorText(directError);
+  const permissionDenied =
+    errorCode(directError) === 'EACCES' || /permission denied|access is denied/i.test(message);
+  if (permissionDenied) {
+    return {
+      ok: false,
+      cliInstalled: true,
+      daemonReachable: true,
+      detail: 'Docker CLI is installed, but this user cannot access /var/run/docker.sock.',
+      hint: 'Run: sudo usermod -aG docker $USER && newgrp docker. Then restart SentinelGlobe.',
+    };
+  }
+
+  if (/cannot connect|is the docker daemon running|connect: no such file|docker\.sock/i.test(message)) {
+    return {
+      ok: false,
+      cliInstalled: true,
+      daemonReachable: false,
+      detail: 'Docker CLI is installed, but the Docker daemon is not running.',
+      hint: 'Press "Start Docker", or run: sudo systemctl start docker',
+    };
+  }
+
+  return {
+    ok: false,
+    cliInstalled: true,
+    daemonReachable: false,
+    detail: `Docker CLI is installed, but the daemon is unavailable: ${message}`,
+    hint: 'Press "Start Docker", or run: sudo systemctl start docker',
+  };
 }
 
 async function docker(args: string[], timeout = 30_000): Promise<{ ok: boolean; out: string; err?: string }> {
@@ -49,8 +117,8 @@ async function docker(args: string[], timeout = 30_000): Promise<{ ok: boolean; 
     const { stdout, stderr } = await execFileAsync('docker', args, { timeout });
     return { ok: true, out: stdout.trim(), err: stderr.trim() };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'docker command failed';
-    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    const message = errorText(error);
+    const code = errorCode(error);
     if (code === 'EACCES' || /permission denied/i.test(message)) {
       try {
         const { stdout, stderr } = await execFileAsync('sudo', ['-n', 'docker', ...args], { timeout });
@@ -59,12 +127,82 @@ async function docker(args: string[], timeout = 30_000): Promise<{ ok: boolean; 
         return {
           ok: false,
           out: '',
-          err: sudoError instanceof Error ? sudoError.message : 'sudo docker failed',
+          err: `Docker socket permission denied and sudo fallback failed: ${errorText(sudoError)}`,
         };
       }
     }
     return { ok: false, out: '', err: message };
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function startDockerDaemon(): Promise<{ ok: boolean; detail: string }> {
+  const current = await dockerAvailable();
+  if (current.ok) {
+    return { ok: true, detail: `Docker ${current.version ?? ''} is already running.`.trim() };
+  }
+  if (!current.cliInstalled) {
+    return { ok: false, detail: current.detail };
+  }
+
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const hasSudo = !isRoot && (await hasBinary('sudo'));
+  const attempts: string[] = [];
+  const run = async (command: string, args: string[], timeout = 60_000) => {
+    try {
+      const { stdout, stderr } = await execFileAsync(command, args, { timeout });
+      return `${stdout}\n${stderr}`.trim();
+    } catch (error) {
+      return errorText(error);
+    }
+  };
+
+  for (const [command, args] of [
+    ['systemctl', ['start', 'docker']],
+    ['service', ['docker', 'start']],
+  ] as const) {
+    const output = isRoot
+      ? await run(command, [...args])
+      : hasSudo
+        ? await run('sudo', ['-n', command, ...args])
+        : 'no sudo available';
+    attempts.push(`${command} ${args.join(' ')}: ${output || 'ok'}`);
+    const after = await dockerAvailable();
+    if (after.ok) {
+      return { ok: true, detail: `Docker daemon started with ${command} ${args.join(' ')}.` };
+    }
+  }
+
+  if (isRoot || hasSudo) {
+    const logPath = path.resolve(paths.logs, 'dockerd.log');
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const fd = fs.openSync(logPath, 'a');
+    try {
+      const child = spawn(isRoot ? 'dockerd' : 'sudo', isRoot ? [] : ['-n', 'dockerd'], {
+        detached: true,
+        stdio: ['ignore', fd, fd],
+      });
+      child.unref();
+    } finally {
+      fs.closeSync(fd);
+    }
+    attempts.push(`dockerd: started in background, log at ${logPath}`);
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await sleep(1000);
+      const after = await dockerAvailable();
+      if (after.ok) {
+        return { ok: true, detail: `Docker daemon started. Log: ${logPath}` };
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    detail: `Docker CLI is installed, but the daemon could not be started. ${current.detail}`,
+  };
 }
 
 function ensureLogPlaceholders(): void {
@@ -225,8 +363,11 @@ export async function getSecurityStackSnapshot(): Promise<SecurityStackSnapshot>
     generatedAt: new Date().toISOString(),
     docker: {
       available: dockerState.ok,
+      cliInstalled: dockerState.cliInstalled,
+      daemonReachable: dockerState.daemonReachable,
       version: dockerState.version,
       detail: dockerState.detail,
+      hint: dockerState.hint,
     },
     tools,
     summary,
@@ -316,14 +457,9 @@ export async function getSecurityToolLogs(id: SecurityToolId, tail = 80): Promis
   );
   if (!result.ok) {
     const err = result.err ?? '';
-    if (/ENOENT|not installed/i.test(err)) {
-      return ['Docker CLI is not installed on this host. Install Docker Engine, then start the tool again.'];
-    }
-    if (/permission denied/i.test(err)) {
-      return ['Docker socket permission denied. Add this user to the docker group or allow passwordless sudo docker.'];
-    }
-    if (/Cannot connect|docker\.sock|daemon/i.test(err)) {
-      return ['Docker daemon is not running. Start it with: sudo dockerd'];
+    if (/ENOENT|not installed|permission denied|Cannot connect|docker\.sock|daemon/i.test(err)) {
+      const state = await dockerAvailable();
+      return [`${state.detail}${state.hint ? ` ${state.hint}` : ''}`];
     }
     if (/No such (object|container)|not found/i.test(err)) {
       return [`${tool.name} container is not running. Press Start first.`];

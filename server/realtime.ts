@@ -1,4 +1,7 @@
+import { spawn } from 'node:child_process';
 import { resolve4 } from 'node:dns/promises';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Server as HttpServer } from 'node:http';
 import { Server } from 'socket.io';
 import type { ScanModuleId, TargetScanResult } from '../src/types/cyber.ts';
@@ -15,6 +18,47 @@ import { scanTargetOrWeb, traceAttackerIp } from './scanner.ts';
 import { isValidIpv4 } from './threatRules.ts';
 
 const ORIGIN_TTL_MS = 10 * 60 * 1000;
+const TERMINAL_ROOT = path.resolve(process.cwd(), 'data', 'terminal');
+const TERMINAL_BIN = path.join(TERMINAL_ROOT, 'bin');
+const TERMINAL_TIMEOUT_MS = 120_000;
+const TERMINAL_RATE_LIMIT = 60;
+const TERMINAL_RATE_WINDOW_MS = 60_000;
+
+function ensureTerminalBin(): void {
+  fs.mkdirSync(TERMINAL_BIN, { recursive: true });
+  const wrapper = path.join(TERMINAL_BIN, 'docker');
+  const realDocker =
+    (process.env.PATH ?? '')
+      .split(':')
+      .filter((directory) => directory && path.resolve(directory) !== path.resolve(TERMINAL_BIN))
+      .map((directory) => path.join(directory, 'docker'))
+      .find((candidate) => fs.existsSync(candidate)) ?? '/usr/bin/docker';
+  const body = `#!/bin/sh
+DOCKER_BIN="${realDocker}"
+if [ ! -x "$DOCKER_BIN" ]; then
+  echo "docker: command not found at $DOCKER_BIN" >&2
+  exit 127
+fi
+ERR="$(mktemp)"
+"$DOCKER_BIN" "$@" 2>"$ERR"
+CODE=$?
+if [ "$CODE" -ne 0 ] && grep -qi "permission denied" "$ERR"; then
+  rm -f "$ERR"
+  exec sudo -n "$DOCKER_BIN" "$@"
+fi
+cat "$ERR" >&2
+rm -f "$ERR"
+exit "$CODE"
+`;
+  try {
+    if (!fs.existsSync(wrapper) || fs.readFileSync(wrapper, 'utf8') !== body) {
+      fs.writeFileSync(wrapper, body, { mode: 0o755 });
+    }
+    fs.chmodSync(wrapper, 0o755);
+  } catch {
+    // Terminal still works without the Docker fallback wrapper.
+  }
+}
 const SOCKET_SCAN_LIMIT = 6;
 const SOCKET_SCAN_WINDOW_MS = 60_000;
 
@@ -138,6 +182,11 @@ export function attachRealtime(httpServer: HttpServer) {
   });
 
   const windows = new Map<string, { count: number; startedAt: number }>();
+  const terminals = new Map<
+    string,
+    { cwd: string; running: boolean; count: number; startedAt: number; child?: ReturnType<typeof spawn> }
+  >();
+  ensureTerminalBin();
 
   io.use((socket, next) => {
     const user = sessionFromCookie(socket.handshake.headers.cookie);
@@ -156,6 +205,126 @@ export function attachRealtime(httpServer: HttpServer) {
         at: new Date().toISOString(),
         scannerOrigin: origin,
       });
+    });
+
+    terminals.set(socket.id, {
+      cwd: process.cwd(),
+      running: false,
+      count: 0,
+      startedAt: Date.now(),
+    });
+
+    socket.on('terminal:exec', (payload, ack) => {
+      if (process.env.SENTINEL_TERMINAL_DISABLED === 'true') {
+        ack?.({ ok: false, error: 'Terminal is disabled by SENTINEL_TERMINAL_DISABLED.' });
+        return;
+      }
+      const command = String(payload?.command ?? '').replace(/\u0000/g, '').trim();
+      if (!command) {
+        ack?.({ ok: false, error: 'Empty command.' });
+        return;
+      }
+      if (command.length > 4000) {
+        ack?.({ ok: false, error: 'Command is too long (max 4000 chars).' });
+        return;
+      }
+      const state = terminals.get(socket.id) ?? {
+        cwd: process.cwd(),
+        running: false,
+        count: 0,
+        startedAt: Date.now(),
+      };
+      terminals.set(socket.id, state);
+      if (state.running) {
+        ack?.({ ok: false, error: 'A command is already running. Wait for it to finish.' });
+        return;
+      }
+      const now = Date.now();
+      if (now - state.startedAt > TERMINAL_RATE_WINDOW_MS) {
+        state.count = 0;
+        state.startedAt = now;
+      }
+      if (state.count >= TERMINAL_RATE_LIMIT) {
+        ack?.({ ok: false, error: 'Terminal rate limit reached. Wait a minute.' });
+        return;
+      }
+      state.count += 1;
+
+      const cdMatch = command.match(/^cd(?:\s+(.*))?$/);
+      if (cdMatch) {
+        const rawTarget = (cdMatch[1] ?? '').trim().replace(/^['"]|['"]$/g, '');
+        const target = rawTarget || process.env.HOME || state.cwd;
+        const next = path.resolve(state.cwd, target);
+        try {
+          if (!fs.statSync(next).isDirectory()) throw new Error('not a directory');
+          state.cwd = next;
+          socket.emit('terminal:output', { stream: 'system', data: `cwd: ${state.cwd}\n` });
+          socket.emit('terminal:exit', { code: 0, cwd: state.cwd });
+          ack?.({ ok: true, cwd: state.cwd });
+        } catch {
+          socket.emit('terminal:output', {
+            stream: 'stderr',
+            data: `cd: no such directory: ${rawTarget || target}\n`,
+          });
+          socket.emit('terminal:exit', { code: 1, cwd: state.cwd });
+          ack?.({ ok: false, cwd: state.cwd, error: 'No such directory.' });
+        }
+        return;
+      }
+
+      state.running = true;
+      socket.emit('terminal:output', { stream: 'system', data: `\n$ ${command}\n` });
+      const child = spawn('/bin/bash', ['-c', command], {
+        cwd: state.cwd,
+        env: {
+          ...process.env,
+          PATH: `${TERMINAL_BIN}:${process.env.PATH ?? ''}`,
+          TERM: 'xterm-256color',
+          PS1: '',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      state.child = child;
+      let finished = false;
+      const finish = (code: number | null) => {
+        if (finished) return;
+        finished = true;
+        state.running = false;
+        state.child = undefined;
+        socket.emit('terminal:exit', { code, cwd: state.cwd });
+      };
+      const timer = setTimeout(() => {
+        socket.emit('terminal:output', {
+          stream: 'stderr',
+          data: `\n[sentinel] command timed out after ${TERMINAL_TIMEOUT_MS / 1000}s\n`,
+        });
+        child.kill('SIGTERM');
+      }, TERMINAL_TIMEOUT_MS);
+      child.stdout?.on('data', (chunk: Buffer) => {
+        socket.emit('terminal:output', { stream: 'stdout', data: chunk.toString('utf8') });
+      });
+      child.stderr?.on('data', (chunk: Buffer) => {
+        socket.emit('terminal:output', { stream: 'stderr', data: chunk.toString('utf8') });
+      });
+      child.on('error', (error) => {
+        clearTimeout(timer);
+        socket.emit('terminal:output', {
+          stream: 'stderr',
+          data: `[sentinel] ${error.message}\n`,
+        });
+        finish(null);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        finish(code);
+      });
+      ack?.({ ok: true, cwd: state.cwd });
+    });
+
+    socket.on('disconnect', () => {
+      const state = terminals.get(socket.id);
+      state?.child?.kill('SIGTERM');
+      terminals.delete(socket.id);
     });
 
     socket.on('scanner:origin', (ack) => {
