@@ -13,7 +13,6 @@ import { scanTargetOrWeb, traceAttackerIp } from './scanner.ts';
 import { lookupAsn, lookupWhoisDomain, lookupWhoisIp } from './nativeIntel.ts';
 import { isValidIpv4 } from './threatRules.ts';
 import { applyIpBlock, removeIpBlock } from './hostFirewall.ts';
-import { pushIpToWaf, removeIpFromWaf } from './wafProviders.ts';
 
 const STATE_FILE_PATH = path.resolve(process.cwd(), '.sentinel-defense-state.json');
 
@@ -327,13 +326,6 @@ class DefenseEngine {
           detail: `Rule generated for protected site ${shield.host}. Deploy it through that site's agent or WAF; this control plane does not add a local host rule.`,
         }
       : await applyIpBlock(cleanIp);
-    entry.wafEnforcement = await pushIpToWaf(cleanIp).catch((error) => [
-      {
-        provider: 'local',
-        ok: false,
-        detail: error instanceof Error ? error.message : 'WAF push failed',
-      },
-    ]);
     this.blockedIps.set(cleanIp, entry);
     this.saveToDisk();
     for (const listener of this.blockListeners) {
@@ -352,7 +344,6 @@ class DefenseEngine {
     const deleted = this.blockedIps.delete(cleanIp);
     if (deleted) {
       if (entry?.scope !== 'protected-site') await removeIpBlock(cleanIp);
-      await removeIpFromWaf(cleanIp).catch(() => []);
       this.saveToDisk();
     }
     return deleted;

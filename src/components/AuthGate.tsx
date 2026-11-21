@@ -140,7 +140,7 @@ function AuthScreen({ lang, onLang }: { lang: Lang; onLang: (lang: Lang) => void
             </div>
             <div className="flex items-center gap-2">
               <LockKeyhole className="w-4 h-4 text-fuchsia-400" />
-              Local firewall · SMTP · Offline intel
+              Local firewall · Offline intel
             </div>
           </div>
 

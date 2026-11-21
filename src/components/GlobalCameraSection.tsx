@@ -180,14 +180,13 @@ export function GlobalCameraSection({
         const direct = await fetch(`/api/cameras/osm-bbox?${params.toString()}`, {
           cache: 'no-store',
         });
-        if (direct.ok) {
-          const payload = (await direct.json().catch(() => null)) as CameraResponse | null;
-          if (payload?.ok) return payload;
-        }
-        const overpass = await fetch(`/api/cameras/overpass-bbox?${params.toString()}`, {
-          cache: 'no-store',
-        });
-        return (await overpass.json().catch(() => ({ cameras: [] }))) as CameraResponse;
+        const payload = (await direct.json().catch(() => null)) as CameraResponse | null;
+        return payload ?? {
+          ok: false,
+          cameras: [],
+          fetchedAt: new Date().toISOString(),
+          error: `OSM HTTP ${direct.status}`,
+        };
       };
       const [osmPayload, feedPayload] = await Promise.all([
         loadOsm(),
@@ -313,7 +312,7 @@ export function GlobalCameraSection({
             )}
           </p>
           <div className="mt-2 flex flex-wrap gap-1 text-[9px] text-slate-400">
-            {['NYC DOT', 'TfL JamCams', 'Caltrans (12 districts)', 'OpenStreetMap', 'Windy (key)', 'Operator feeds'].map((source) => (
+            {['NYC DOT', 'TfL JamCams', 'Caltrans (12 districts)', 'OpenStreetMap', 'Operator feeds'].map((source) => (
               <span key={source} className="rounded-full border border-slate-700 bg-slate-900/70 px-2 py-0.5">
                 {source}
               </span>

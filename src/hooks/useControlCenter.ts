@@ -6,7 +6,6 @@ import type {
   DetectionConfig,
   IntegrationSnapshot,
   SensorOverview,
-  SmtpStatus,
   WafActionResult,
   WafProvider,
   WafSyncEntry,
@@ -269,56 +268,6 @@ export function useControlCenter(lang: Lang = 'bn') {
     [run, lang],
   );
 
-  const saveSmtp = useCallback(
-    (payload: Record<string, unknown>) =>
-      run(async () => {
-        await fetch('/api/integrations/smtp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }).then((res) => readJson<SmtpStatus>(res));
-      }, msg('SMTP সেটিংস সেভ হয়েছে।', 'SMTP settings saved.')),
-    [run, lang],
-  );
-
-  const deleteSmtp = useCallback(
-    () =>
-      run(async () => {
-        await fetch('/api/integrations/smtp', { method: 'DELETE' }).then((res) =>
-          readJson<SmtpStatus>(res),
-        );
-      }, msg('SMTP সেটিংস সরানো হয়েছে।', 'SMTP settings removed.')),
-    [run, lang],
-  );
-
-  const testSmtp = useCallback(
-    (to: string) =>
-      run(async () => {
-        const result = await fetch('/api/integrations/smtp/test', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to }),
-        }).then((res) => readJson<{ ok: boolean; detail: string }>(res));
-        if (!result.ok) throw new Error(result.detail);
-        return result;
-      }, msg('টেস্ট ইমেইল পাঠানো হয়েছে।', 'Test email sent.')),
-    [run, lang],
-  );
-
-  const sendAbuseEmail = useCallback(
-    (ip: string, recipients?: string[]) =>
-      run(async () => {
-        const result = await fetch('/api/abuse/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip, recipients }),
-        }).then((res) => readJson<{ ok: boolean; detail: string; recipients: string[] }>(res));
-        if (!result.ok) throw new Error(result.detail);
-        return result;
-      }, msg('অ্যাবিউজ রিপোর্ট পাঠানো হয়েছে।', 'Abuse report sent.')),
-    [run, lang],
-  );
-
   const pruneData = useCallback(
     (days: number) =>
       run(async () => {
@@ -356,10 +305,6 @@ export function useControlCenter(lang: Lang = 'bn') {
       deleteIntegration,
       testIntegration,
       setPolicy,
-      saveSmtp,
-      deleteSmtp,
-      testSmtp,
-      sendAbuseEmail,
       pruneData,
       clearNotice: () => setNotice(null),
     }),
@@ -384,10 +329,6 @@ export function useControlCenter(lang: Lang = 'bn') {
       deleteIntegration,
       testIntegration,
       setPolicy,
-      saveSmtp,
-      deleteSmtp,
-      testSmtp,
-      sendAbuseEmail,
       pruneData,
     ],
   );

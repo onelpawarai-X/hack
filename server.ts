@@ -4,19 +4,10 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import {
-  buildDossierEml,
-  clearSmtpConfig,
-  getSmtpStatus,
-  maybeAutoSendAbuseReport,
-  sendAbuseReportForIp,
-  sendForensicDossierForIp,
-  setSmtpConfig,
-  testSmtp,
-} from './server/abuseMailer.ts';
+import { buildDossierEml } from './server/dossierEml.ts';
 import { buildAttackerDossier } from './server/attackerDossier.ts';
 import { cameraRegistry } from './server/cameraRegistry.ts';
-import { findOsmSurveillance, findOsmSurveillanceBbox, findOverpassSurveillanceBbox } from './server/publicCameras.ts';
+import { findOsmSurveillance, findOsmSurveillanceBbox } from './server/publicCameras.ts';
 import { nearbyPublicFeeds } from './server/publicCameraFeeds.ts';
 import { buildSiteAgentBundle } from './server/siteAgentBundle.ts';
 import { createZip } from './server/zip.ts';
@@ -633,34 +624,14 @@ async function startServer() {
         return res.send(dossier.reportHtml);
       }
       if (format === 'eml') {
-        const from = getSmtpStatus().from || 'sentinel@localhost';
         const to = Array.isArray(req.query.to) ? req.query.to.map(String) : [];
         res.setHeader('Content-Type', 'message/rfc822');
         res.setHeader('Content-Disposition', `attachment; filename="sentinel-dossier-${ip}.eml"`);
-        return res.send(buildDossierEml(dossier, from, to.length ? to : dossier.whois.abuseEmails));
+        return res.send(buildDossierEml(dossier, 'sentinel@localhost', to.length ? to : dossier.whois.abuseEmails));
       }
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="sentinel-dossier-${ip}.txt"`);
       return res.send(dossier.reportText);
-    } catch (err) {
-      return res.status(502).json({ error: getErrorMessage(err) });
-    }
-  });
-
-  app.post('/api/attacker/:ip/email', async (req, res) => {
-    const ip = String(req.params.ip ?? '').trim();
-    if (!isValidIpv4(ip)) return res.status(400).json({ error: 'Valid IPv4 address required.' });
-    const recipients = Array.isArray(req.body?.recipients)
-      ? req.body.recipients.map((value: unknown) => String(value)).filter(Boolean)
-      : undefined;
-    try {
-      const result = await sendForensicDossierForIp(ip, recipients);
-      return res.status(result.ok ? 200 : 502).json({
-        ok: result.ok,
-        detail: result.detail,
-        recipients: result.recipients,
-        dossier: result.dossier,
-      });
     } catch (err) {
       return res.status(502).json({ error: getErrorMessage(err) });
     }
@@ -722,15 +693,6 @@ async function startServer() {
       return res.status(400).json({ error: 'Valid lat and lon are required.' });
     }
     const result = await findOsmSurveillance(lat, lon, radius);
-    return res.status(result.ok ? 200 : 502).json(result);
-  });
-
-  app.get('/api/cameras/overpass-bbox', async (req, res) => {
-    const south = Number(req.query.south);
-    const west = Number(req.query.west);
-    const north = Number(req.query.north);
-    const east = Number(req.query.east);
-    const result = await findOverpassSurveillanceBbox(south, west, north, east);
     return res.status(result.ok ? 200 : 502).json(result);
   });
 
@@ -975,7 +937,7 @@ async function startServer() {
 
   // ---- Control Center: alert integrations ----
   app.get('/api/integrations', (_req, res) => {
-    return res.json({ ...getIntegrationStatus(), smtp: getSmtpStatus() });
+    return res.json(getIntegrationStatus());
   });
 
   app.post('/api/integrations/policy', (req, res) => {
@@ -991,25 +953,6 @@ async function startServer() {
       notifyOnBlock: typeof req.body?.notifyOnBlock === 'boolean' ? req.body.notifyOnBlock : undefined,
     });
     return res.json(getIntegrationStatus());
-  });
-
-  app.post('/api/integrations/smtp', (req, res) => {
-    const result = setSmtpConfig(req.body ?? {});
-    if (!result.ok) return res.status(400).json({ error: result.error });
-    return res.json(getSmtpStatus());
-  });
-
-  app.delete('/api/integrations/smtp', (_req, res) => {
-    clearSmtpConfig();
-    return res.json(getSmtpStatus());
-  });
-
-  app.post('/api/integrations/smtp/test', async (req, res) => {
-    const to = String(req.body?.to ?? '').trim();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
-      return res.status(400).json({ error: 'A valid recipient email is required.' });
-    }
-    return res.json(await testSmtp(to));
   });
 
   app.post('/api/integrations/:channel', (req, res) => {
@@ -1041,19 +984,6 @@ async function startServer() {
 
   app.get('/api/deliveries', (_req, res) => {
     return res.json({ deliveries: listDeliveries(80) });
-  });
-
-  app.post('/api/abuse/send', async (req, res) => {
-    const ip = String(req.body?.ip ?? '').trim();
-    if (!isValidIpv4(ip)) return res.status(400).json({ error: 'Valid IPv4 address required.' });
-    const recipients = Array.isArray(req.body?.recipients)
-      ? req.body.recipients.map((value: unknown) => String(value))
-      : undefined;
-    try {
-      return res.json(await sendAbuseReportForIp(ip, recipients));
-    } catch (err) {
-      return res.status(502).json({ error: getErrorMessage(err) });
-    }
   });
 
   // ---- Control Center: local event store ----
@@ -1132,7 +1062,6 @@ async function startServer() {
       db: dbStats(),
       waf: getWafStatus(),
       integrations: getIntegrationStatus(),
-      smtp: getSmtpStatus(),
       sensors: sensorOverview(requestBaseUrl(req)),
       tlsSensor: tlsSensorStatus(),
     });
@@ -1365,7 +1294,6 @@ async function startServer() {
   defenseEngine.onBlock((entry) => {
     if (isWafAutoPushEnabled()) void pushIpToWaf(entry.ip);
     void notifyBlockedIp(entry);
-    void maybeAutoSendAbuseReport(entry);
   });
 
   startTlsFingerprintSensor({ port: Number(process.env.SENTINEL_TLS_SENSOR_PORT) || 0 });

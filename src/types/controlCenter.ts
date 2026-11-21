@@ -59,18 +59,6 @@ export interface IntegrationSnapshot {
   integrations: IntegrationStatus[];
   minSeverity: ThreatSeverity;
   notifyOnBlock: boolean;
-  smtp: SmtpStatus;
-}
-
-export interface SmtpStatus {
-  configured: boolean;
-  host?: string;
-  port?: number;
-  secure?: boolean;
-  from?: string;
-  source: 'database' | 'environment' | 'none';
-  autoSend: boolean;
-  detail: string;
 }
 
 export interface DeliveryEntry {
@@ -118,7 +106,6 @@ export interface SystemInfo {
     minSeverity: ThreatSeverity;
     notifyOnBlock: boolean;
   };
-  smtp: SmtpStatus;
   sensors: SensorOverview;
   tlsSensor?: {
     enabled: boolean;

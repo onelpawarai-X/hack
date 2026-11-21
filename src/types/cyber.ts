@@ -476,7 +476,6 @@ export interface BlockedIpEntry {
     detail: string;
     appliedAt?: string;
   };
-  wafEnforcement?: Array<{ provider: string; ok: boolean; detail: string }>;
   firewallRules: {
     nginx: string;
     iptables: string;

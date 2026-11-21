@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { Download, FileText, Globe2, Mail, MapPin, ShieldAlert, ShieldBan, Video } from 'lucide-react';
+import { Download, FileText, Globe2, MapPin, ShieldAlert, ShieldBan, Video } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Language, ThreatActorExternalIntel } from '../types/cyber';
 
@@ -149,8 +149,6 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [recipients, setRecipients] = useState('');
-  const [mailStatus, setMailStatus] = useState<string | null>(null);
   const [blockStatus, setBlockStatus] = useState<string | null>(null);
   const [cameras, setCameras] = useState<PublicCamera[]>([]);
   const [osmCameras, setOsmCameras] = useState<OsmCamera[]>([]);
@@ -189,7 +187,6 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
     if (!clean) return;
     setLoading(true);
     setError(null);
-    setMailStatus(null);
     setBlockStatus(null);
     setSelectedCamera(null);
     setOsmCameras([]);
@@ -255,24 +252,6 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
       onBlocked?.();
     } catch (err) {
       setBlockStatus(err instanceof Error ? err.message : 'Block failed');
-    }
-  };
-
-  const sendMail = async () => {
-    if (!dossier) return;
-    setMailStatus(null);
-    try {
-      const to = recipients.split(',').map((value) => value.trim()).filter(Boolean);
-      const res = await fetch(`/api/attacker/${encodeURIComponent(dossier.ip)}/email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipients: to }),
-      });
-      const payload = await res.json();
-      if (!res.ok) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
-      setMailStatus(`${L(lang, 'পাঠানো হয়েছে', 'Sent')}: ${payload.recipients?.join(', ') || 'SMTP'}`);
-    } catch (err) {
-      setMailStatus(err instanceof Error ? err.message : 'Mail failed');
     }
   };
 
@@ -412,12 +391,6 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
                 {dossier.risk.factors.map((factor) => <li key={factor}>• {factor}</li>)}
               </ul>
               <div className="mt-3 space-y-1.5">
-                <input
-                  value={recipients}
-                  onChange={(event) => setRecipients(event.target.value)}
-                  placeholder={L(lang, 'কোম্পানির সিকিউরিটি ইমেইল (কমা দিয়ে একাধিক)', 'Company security email(s), comma separated')}
-                  className="w-full rounded-lg border border-slate-700 bg-[#02060c] px-2 py-1.5 text-[10px] text-slate-100 outline-none focus:border-cyan-500/60"
-                />
                 {shields.length > 0 && (
                   <select
                     value={targetShieldId}
@@ -435,20 +408,12 @@ export function AttackerDossierPanel({ lang, initialIp, onBlocked }: AttackerDos
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
-                    onClick={() => void sendMail()}
-                    className="inline-flex items-center gap-1 rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-fuchsia-200"
-                  >
-                    <Mail className="h-3 w-3" /> {L(lang, 'Gmail/SMTP-এ রিপোর্ট', 'Send via Gmail/SMTP')}
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => void block()}
                     className="inline-flex items-center gap-1 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-red-200"
                   >
                     <ShieldBan className="h-3 w-3" /> {L(lang, 'লোকালি ব্লক', 'Block locally')}
                   </button>
                 </div>
-                {mailStatus && <p className="text-[9px] text-amber-300">{mailStatus}</p>}
                 {blockStatus && <p className="text-[9px] text-emerald-300">{blockStatus}</p>}
               </div>
             </div>

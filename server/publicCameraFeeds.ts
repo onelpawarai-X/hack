@@ -162,41 +162,6 @@ async function loadCaltransCameras(): Promise<FeedCamera[]> {
   return cameras;
 }
 
-async function loadWindyCameras(): Promise<FeedCamera[]> {
-  const key = process.env.WINDY_WEBCAMS_KEY?.trim();
-  if (!key) return [];
-  const payload = (await fetchJson(
-    `https://api.windy.com/webcams/api/v3/webcams?limit=50&include=location,images&key=${encodeURIComponent(key)}`,
-  )) as { webcams?: Array<Record<string, unknown>> };
-  const cameras: FeedCamera[] = [];
-  for (const row of payload.webcams ?? []) {
-    const location = (row.location ?? {}) as Record<string, unknown>;
-    const images = (row.images ?? {}) as Record<string, unknown>;
-    const current = (images.current ?? {}) as Record<string, unknown>;
-    const lat = Number(location.latitude);
-    const lon = Number(location.longitude);
-    const streamUrl = String(current.preview ?? current.thumbnail ?? '');
-    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !/^https:\/\//i.test(streamUrl)) continue;
-    cameras.push({
-      id: `windy:${String(row.id ?? row.title ?? lat)}`,
-      name: String(row.title ?? location.city ?? 'Windy webcam'),
-      lat,
-      lon,
-      distanceKm: 0,
-      kind: 'windy public webcam',
-      operator: 'Windy.com',
-      zone: [location.city, location.country].filter(Boolean).join(' · ') || undefined,
-      description: 'Public webcam indexed by Windy.com.',
-      osmUrl: streamUrl,
-      streamUrl,
-      protocol: 'image',
-      source: 'Windy',
-      attribution: 'Windy.com public webcam network',
-    });
-  }
-  return cameras;
-}
-
 async function cached(key: string, loader: () => Promise<FeedCamera[]>): Promise<FeedCamera[]> {
   const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.cameras;
@@ -214,13 +179,12 @@ export async function nearbyPublicFeeds(
   lon: number,
   radiusKm: number,
 ): Promise<FeedCamera[]> {
-  const [nyc, tfl, caltrans, windy] = await Promise.all([
+  const [nyc, tfl, caltrans] = await Promise.all([
     cached('nyc', loadNycCameras),
     cached('tfl', loadTflCameras),
     cached('caltrans', loadCaltransCameras),
-    cached('windy', loadWindyCameras),
   ]);
-  return [...nyc, ...tfl, ...caltrans, ...windy]
+  return [...nyc, ...tfl, ...caltrans]
     .map((camera) => ({
       ...camera,
       distanceKm: Number(distanceKm(lat, lon, camera.lat, camera.lon).toFixed(3)),

@@ -15,7 +15,6 @@ import {
   Loader2,
   LockKeyhole,
   LogOut,
-  Mail,
   Network,
   Plus,
   Radio,
@@ -26,7 +25,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Terminal,
-  TestTube2,
   Trash2,
   X,
   Zap,
@@ -266,19 +264,7 @@ export function ControlCenter({
     minSeverity: 'HIGH',
     notifyOnBlock: true,
   });
-  const [smtpForm, setSmtpForm] = useState({
-    host: '',
-    port: '587',
-    secure: false,
-    user: '',
-    pass: '',
-    from: '',
-    autoSend: false,
-  });
-  const [smtpTestTo, setSmtpTestTo] = useState('');
   const [pruneDays, setPruneDays] = useState('30');
-  const [abuseIp, setAbuseIp] = useState('');
-  const [abuseTo, setAbuseTo] = useState('');
 
   useEffect(() => {
     const integration = cc.data.integrations;
@@ -287,17 +273,6 @@ export function ControlCenter({
         minSeverity: integration.minSeverity,
         notifyOnBlock: integration.notifyOnBlock,
       });
-      if (!smtpForm.host && integration.smtp.host) {
-        setSmtpForm({
-          host: integration.smtp.host,
-          port: String(integration.smtp.port ?? 587),
-          secure: Boolean(integration.smtp.secure),
-          user: '',
-          pass: '',
-          from: integration.smtp.from ?? '',
-          autoSend: integration.smtp.autoSend,
-        });
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cc.data.integrations]);
@@ -316,8 +291,7 @@ export function ControlCenter({
   const onlineSensors = cc.data.sensors?.nodes.filter((node) => node.status === 'online').length ?? 0;
   const wafReady = cc.data.wafProviders.filter((provider) => provider.configured).length;
   const alertsReady =
-    (cc.data.integrations?.integrations.filter((integration) => integration.configured).length ?? 0) +
-    (cc.data.integrations?.smtp.configured ? 1 : 0);
+    cc.data.integrations?.integrations.filter((integration) => integration.configured).length ?? 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-2 sm:p-5">
@@ -334,8 +308,8 @@ export function ControlCenter({
               <p className="text-[10px] text-slate-500">
                 {L(
                   lang,
-                  'অথ, WAF, সেন্সর, অ্যালার্ট, SMTP ও ইভেন্ট স্টোর — সব এক জায়গায়।',
-                  'Auth, WAF, sensors, alerts, SMTP and the event store in one place.',
+                  'অথ, WAF, সেন্সর, অ্যালার্ট ও ইভেন্ট স্টোর — সব এক জায়গায়।',
+                  'Auth, WAF, sensors, alerts and the event store in one place.',
                 )}
               </p>
             </div>
@@ -738,7 +712,7 @@ export function ControlCenter({
               <SectionTitle
                 icon={<BellRing className="w-4 h-4" />}
                 title={L(lang, 'রিয়েল-টাইম অ্যালার্ট', 'Real-time alerts')}
-                subtitle={L(lang, 'লোকাল ইভেন্ট লেজার + নিজের SMTP/Gmail। কোনো থার্ড-পার্টি API নেই।', 'Local event ledger + your own SMTP/Gmail. No third-party API.')}
+                subtitle={L(lang, 'লোকাল ইভেন্ট লেজার। কোনো থার্ড-পার্টি API বা ইমেইল ক্রেডেনশিয়াল নেই।', 'Local event ledger. No third-party API and no email credentials.')}
               />
 
               <Card>
@@ -747,7 +721,7 @@ export function ControlCenter({
                   <div>
                     <h3 className="text-xs font-bold text-slate-100">{L(lang, 'রিমোট API বন্ধ', 'Remote APIs disabled')}</h3>
                     <p className="mt-1 text-[10px] text-slate-400">
-                      {L(lang, 'Slack, Telegram ও SIEM webhook ডেলিভারি বাদ দেওয়া হয়েছে। কোনো থার্ড-পার্টি API বা রেট লিমিট নেই। সব অ্যালার্ট লোকাল ইভেন্ট লেজারে থাকে; ইমেইল যায় শুধু আপনার নিজের SMTP/Gmail দিয়ে।', 'Slack, Telegram and SIEM webhook delivery are removed. No third-party API or rate limit. Alerts stay in the local event ledger; email goes only through your own SMTP/Gmail.')}
+                      {L(lang, 'Slack, Telegram, SIEM webhook ও SMTP ইমেইল ডেলিভারি বাদ দেওয়া হয়েছে। কোনো থার্ড-পার্টি API, রেট লিমিট বা ইমেইল ক্রেডেনশিয়াল নেই। সব অ্যালার্ট লোকাল ইভেন্ট লেজারে থাকে।', 'Slack, Telegram, SIEM webhooks and SMTP email delivery are removed. No third-party API, rate limit or email credentials. Alerts stay in the local event ledger.')}
                     </p>
                   </div>
                 </div>
@@ -772,55 +746,6 @@ export function ControlCenter({
                   <Toggle checked={policy.notifyOnBlock} onChange={(value) => setPolicy((prev) => ({ ...prev, notifyOnBlock: value }))} label={L(lang, 'ব্লক ইভেন্টে নোটিফাই', 'Notify on block')} />
                   <ActionButton tone="emerald" onClick={() => void cc.setPolicy(policy)} disabled={cc.busy}>
                     {L(lang, 'পলিসি সেভ', 'Save policy')}
-                  </ActionButton>
-                </div>
-              </Card>
-
-              <Card>
-                <SectionTitle
-                  icon={<Mail className="w-4 h-4" />}
-                  title="SMTP / Gmail forensic report"
-                  subtitle={L(lang, 'নিজের Gmail app password বা SMTP দিয়ে ফরেনসিক রিপোর্ট পাঠান। কোনো Gmail API নয়।', 'Send forensic reports through your own Gmail app password or SMTP. No Gmail API.')}
-                />
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <Field label="SMTP host" value={smtpForm.host} onChange={(value) => setSmtpForm((prev) => ({ ...prev, host: value }))} placeholder="smtp.example.com" />
-                  <Field label="Port" value={smtpForm.port} onChange={(value) => setSmtpForm((prev) => ({ ...prev, port: value }))} />
-                  <Field label="From" value={smtpForm.from} onChange={(value) => setSmtpForm((prev) => ({ ...prev, from: value }))} placeholder="security@example.com" />
-                  <Field label="User" value={smtpForm.user} onChange={(value) => setSmtpForm((prev) => ({ ...prev, user: value }))} />
-                  <Field label="Password" value={smtpForm.pass} onChange={(value) => setSmtpForm((prev) => ({ ...prev, pass: value }))} type="password" />
-                  <div className="flex items-end gap-2">
-                    <Toggle checked={smtpForm.secure} onChange={(value) => setSmtpForm((prev) => ({ ...prev, secure: value }))} label="TLS" />
-                    <Toggle checked={smtpForm.autoSend} onChange={(value) => setSmtpForm((prev) => ({ ...prev, autoSend: value }))} label={L(lang, 'অটো সেন্ড', 'Auto send')} />
-                  </div>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <ActionButton tone="slate" onClick={() => setSmtpForm((prev) => ({ ...prev, host: 'smtp.gmail.com', port: '465', secure: true }))} disabled={cc.busy}>
-                    Gmail preset
-                  </ActionButton>
-                  <ActionButton tone="fuchsia" onClick={() => void cc.saveSmtp({ ...smtpForm, port: Number(smtpForm.port) })} disabled={cc.busy}>
-                    {L(lang, 'SMTP সেভ', 'Save SMTP')}
-                  </ActionButton>
-                  <ActionButton tone="slate" onClick={() => void cc.deleteSmtp()} disabled={cc.busy}>
-                    {L(lang, 'মুছুন', 'Clear')}
-                  </ActionButton>
-                </div>
-                <div className="mt-3 flex flex-wrap items-end gap-2">
-                  <div className="flex-1 min-w-[180px]">
-                    <Field label={L(lang, 'টেস্ট ইমেইল', 'Test email')} value={smtpTestTo} onChange={setSmtpTestTo} placeholder="you@example.com" />
-                  </div>
-                  <ActionButton tone="emerald" icon={<TestTube2 className="w-3.5 h-3.5" />} onClick={() => void cc.testSmtp(smtpTestTo)} disabled={cc.busy || !smtpTestTo}>
-                    {L(lang, 'টেস্ট পাঠান', 'Send test')}
-                  </ActionButton>
-                </div>
-                <div className="mt-3 flex flex-wrap items-end gap-2">
-                  <div className="flex-1 min-w-[180px]">
-                    <Field label={L(lang, 'অ্যাবিউজ রিপোর্ট আইপি', 'Abuse report IP')} value={abuseIp} onChange={setAbuseIp} placeholder="203.0.113.10" />
-                  </div>
-                  <div className="flex-1 min-w-[180px]">
-                    <Field label={L(lang, 'রিসিপিয়েন্ট (ঐচ্ছিক)', 'Recipients (optional)')} value={abuseTo} onChange={setAbuseTo} placeholder="abuse@example.com" />
-                  </div>
-                  <ActionButton tone="fuchsia" icon={<Mail className="w-3.5 h-3.5" />} onClick={() => void cc.sendAbuseEmail(abuseIp.trim(), abuseTo ? abuseTo.split(',').map((value) => value.trim()) : undefined)} disabled={cc.busy || !abuseIp}>
-                    {L(lang, 'রিপোর্ট পাঠান', 'Send report')}
                   </ActionButton>
                 </div>
               </Card>

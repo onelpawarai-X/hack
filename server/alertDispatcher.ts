@@ -39,7 +39,7 @@ export function setIntegrationConfig(
   return {
     ok: false,
     error:
-      'Remote webhook/bot integrations are disabled. SentinelGlobe uses local event storage and SMTP only.',
+      'Remote webhook/bot integrations are disabled. SentinelGlobe uses local event storage only.',
   };
 }
 
@@ -118,7 +118,7 @@ export async function testIntegration(_channel: AlertChannel): Promise<DeliveryR
   return {
     channel: 'local',
     ok: false,
-    detail: 'Remote integrations are disabled. Configure SMTP for email delivery.',
+    detail: 'Remote integrations and email delivery are disabled. Events stay in the local ledger.',
   };
 }
 

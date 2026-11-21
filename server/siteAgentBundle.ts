@@ -34,8 +34,8 @@ This package connects your website to the SentinelGlobe monitoring and defense n
   DNS TXT, well-known HTTP file and HTML meta-tag verification are also available from the dashboard.
 - Threat events per site: attack counts, last beacon, online/offline state and shield state.
 - One-click protection: create a shield for your domain from the Website Network section.
-- Downloadable firewall bundle for that shield: Nginx deny list, iptables script, Cloudflare
-  WAF expression and DNS sinkhole hosts file.
+- Downloadable firewall bundle for that shield: Nginx deny list, iptables script, manual edge-WAF
+  expression and DNS sinkhole hosts file.
 - Client-side protection mode (\`data-mode="protect"\`) removes known-bad injected resources.
 
 ## কী দিচ্ছি না / What is not included
